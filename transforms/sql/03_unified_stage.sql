@@ -1,1 +1,4 @@
--- placeholder: CREATE OR REPLACE VIEW public.unified_stage AS SELECT 1 WHERE false;
+CREATE OR REPLACE VIEW silver.unified AS
+SELECT * FROM silver.jobspy
+UNION ALL
+SELECT * FROM silver.stepstone;
