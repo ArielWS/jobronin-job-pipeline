@@ -32,3 +32,4 @@ sequenceDiagram
   API->>DB: Read MatchResult (+ DMs if available)
   DB-->>API: Rows
   API-->>Client: Results (paged) and DM preview
+```
