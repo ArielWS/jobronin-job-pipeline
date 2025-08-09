@@ -1,5 +1,6 @@
 ```markdown
 # Nightly ETL (Bronze → Silver → Gold)
+```
 
 ```mermaid
 sequenceDiagram
@@ -18,3 +19,4 @@ sequenceDiagram
   DB-->>Metrics: Emit counts and timings
   ETL->>DB: Analyze/Vacuum touched partitions
   ETL-->>Metrics: Success/failure
+```
