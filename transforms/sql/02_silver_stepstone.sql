@@ -1,0 +1,1 @@
+-- placeholder: CREATE OR REPLACE VIEW public.stepstone_job_scrape_stage AS SELECT 1 WHERE false;

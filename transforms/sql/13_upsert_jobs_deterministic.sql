@@ -1,0 +1,1 @@
+-- placeholder for deterministic job upsert (ATS/apply URL)

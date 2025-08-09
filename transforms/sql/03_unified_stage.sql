@@ -1,0 +1,1 @@
+-- placeholder: CREATE OR REPLACE VIEW public.unified_stage AS SELECT 1 WHERE false;

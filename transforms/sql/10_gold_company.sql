@@ -1,0 +1,1 @@
+-- placeholder for gold company tables

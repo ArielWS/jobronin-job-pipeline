@@ -1,0 +1,20 @@
+name: nightly
+on:
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run transforms
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          for f in transforms/sql/*.sql; do
+            echo ">>> Running ${f}"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
