@@ -1,35 +1,37 @@
 ```markdown
 # Agent Search & Enrichment (Sequence)
+```
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant Client as Client (Lovable/Extension)
-  participant API as Public API /v1
+  participant Client as Client (Web/Extension)
+  participant API as Public API v1
   participant DB as Postgres
   participant Q as Worker Queue
-  participant W as Workers (LLM/Contacts)
-  participant Provider as Contact Provider API
+  participant W as Workers
+  participant Provider as Contact API
 
-  Client->>API: POST /v1/search {payload, filters}
+  Client->>API: POST /v1/search
   API->>DB: Insert SearchSession
-  API->>DB: Call match function (Filter + Rank on Gold)
+  API->>DB: Call match_fn (Filter + Rank)
   DB-->>API: Top-N written to MatchResult
-  API-->>Client: 200 {session_id, results}
+  API-->>Client: 200 session_id and results
 
-  par Optional verify and contacts
-    API->>Q: Enqueue verify/contact for top-K
+  opt Verify and contacts (optional)
+    API->>Q: Enqueue tasks for top-K
     Q->>W: Dispatch task
-    W->>DB: Cache job/candidate summaries
-    W->>DB: Store fit verdicts (candidate, job)
+    W->>DB: Cache summaries
+    W->>DB: Store fit verdicts
     W->>DB: Role inference and DM cache lookup
-    W->>Provider: Fetch contacts if cache miss and budget ok
+    W->>Provider: Fetch contacts if needed
     Provider-->>W: Contacts
-    W->>DB: Upsert DecisionMaker and links; update cache
+    W->>DB: Upsert decision makers
+    W->>DB: Update DM cache
   end
 
   Client->>API: GET /v1/search/{session}/results
-  API->>DB: Read MatchResult (+ DMs if available)
+  API->>DB: Read MatchResult and decision makers
   DB-->>API: Rows
-  API-->>Client: Results (paged) and DM preview
+  API-->>Client: Paged results
 ```
