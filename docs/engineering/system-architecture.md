@@ -2,64 +2,78 @@
 
 ```mermaid
 flowchart LR
+  %% LAYERS
   subgraph Clients
     CE[Chrome Extension]
-    LW[Lovable Web App]
-    Admin[Internal Admin]
+    LW[Lovable Web]
+    Admin[Admin Console]
   end
 
-  subgraph API
-    AuthRBAC[Auth and RBAC (JWT + API Keys)]
-    Match[Match Orchestrator (Filter + Rank SQL)]
+  subgraph API["API Layer"]
+    APIGW[Public API v1]
+    Auth[Auth and RBAC]
     Quotas[Usage and Quotas]
-    DMAPI[Decision-Maker Endpoints]
+    Match[Match Orchestrator]
+    DMAPI[Decision Maker API]
   end
 
   subgraph Workers
-    LLM[LLM Verify or Rerank (top-K only, cached)]
-    Contacts[Contact Enrichment (provider APIs, cached)]
-    Browser[Browser-Use Automations (optional)]
-    Sched[Scheduler (agent runs)]
+    Queue[Worker Queue]
+    LLM[LLM Verify]
+    Contacts[Contact Enrich]
+    Browser[Browser Use]
+    Sched[Scheduler]
   end
 
   subgraph Data
     Bronze[Bronze Raw]
-    Silver[Silver Views per source]
-    Gold[Gold Canonical: Company, CompanyAlias, JobPost, JobSourceLink]
-    Features[Features: text index, tokens, optional vectors]
-    Matching[Matching: Agent, SearchSession, MatchResult]
-    People[Decision-Makers: DecisionMaker, DMCompanyLink, DMJobLink, DMSourceCache]
+    Silver[Silver Views]
+    Gold[Gold Canonical]
+    Features[Features]
+    Matching[Matching Tables]
+    People[Decision Makers]
   end
 
   subgraph Ingestion
     JS[JobSpy]
     SS[StepStone]
-    Others[Future sources]
+    OS[Other Sources]
   end
 
-  CE -->|HTTPS| API
-  LW -->|HTTPS| API
-  Admin -->|HTTPS| API
+  %% CLIENTS -> API
+  CE -->|HTTPS requests| APIGW
+  LW -->|HTTPS requests| APIGW
+  Admin -->|HTTPS requests| APIGW
 
-  API --> AuthRBAC
-  API --> Quotas
-  API --> Match
-  API --> DMAPI
+  %% API INTERNALS
+  APIGW --> Auth
+  APIGW --> Quotas
+  APIGW --> Match
+  APIGW --> DMAPI
 
-  Match --> Gold
-  Match --> Features
-  API --> Matching
+  %% MATCH PATH (WHY: fast read + write results)
+  Match -->|read jobs| Gold
+  Match -->|use signals| Features
+  Match -->|write results| Matching
 
-  DMAPI --> People
-  API -->|enqueue| Workers
-  Workers --> People
-  Workers --> Matching
-  Workers --> Gold
+  %% DECISION MAKERS (WHY: fetch on demand, cache)
+  DMAPI -->|read write| People
 
-  JS --> Bronze
-  SS --> Bronze
-  Others --> Bronze
+  %% BACKGROUND WORK (WHY: keep API fast)
+  APIGW -->|enqueue tasks| Queue
+  Sched -->|run agents daily| APIGW
+  Queue --> LLM
+  Queue --> Contacts
+  Queue --> Browser
+  LLM -->|verify top K| Matching
+  Contacts -->|upsert contacts| People
+  Browser -->|org hints and fixes| Gold
 
-  Bronze --> Silver --> Gold --> Features
+  %% DATA PIPELINE (WHY: clean, dedupe, enrich)
+  JS -->|raw posts nightly| Bronze
+  SS -->|raw posts nightly| Bronze
+  OS -->|raw posts nightly| Bronze
 
-  Sched --> API
+  Bronze -->|normalize per source| Silver
+  Silver -->|dedupe and merge| Gold
+  Gold -->|build search signals| Features
