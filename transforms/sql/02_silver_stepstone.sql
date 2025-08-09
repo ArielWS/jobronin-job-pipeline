@@ -1,11 +1,36 @@
+-- transforms/sql/02_silver_stepstone.sql
 CREATE OR REPLACE VIEW silver.stepstone AS
-WITH base AS (
+WITH raw AS (
   SELECT
     'stepstone'::text AS source,
     ss.id             AS source_id,
     ss.location       AS search_location_raw,
-    ss.job_data::jsonb AS j
+    ss.job_data       AS job_data_text
   FROM public.stepstone_job_scrape ss
+),
+-- Replace invalid JSON tokens with null so ::jsonb succeeds
+clean AS (
+  SELECT
+    source,
+    source_id,
+    search_location_raw,
+    regexp_replace(
+      regexp_replace(
+        regexp_replace(
+          regexp_replace(job_data_text, ':\s*NaN(\s*[,}])',        ': null\1', 'g'),
+          ':\s*Infinity(\s*[,}])',   ': null\1', 'g'),
+        ':\s*-Infinity(\s*[,}])',    ': null\1', 'g'),
+      ':\s*None(\s*[,}])',           ': null\1', 'g'
+    ) AS job_data_clean
+  FROM raw
+),
+base AS (
+  SELECT
+    source,
+    source_id,
+    search_location_raw,
+    job_data_clean::jsonb AS j
+  FROM clean
 )
 SELECT
   b.source,
@@ -25,18 +50,19 @@ SELECT
   NULL::text                                AS country_guess,
 
   NULLIF(b.j->>'date_posted','')::date      AS date_posted,
+
   CASE
     WHEN lower(COALESCE(b.j->>'work_type','')) LIKE '%homeoffice%' THEN TRUE
-    WHEN lower(COALESCE(b.j->>'work_type','')) LIKE '%remote%' THEN TRUE
+    WHEN lower(COALESCE(b.j->>'work_type','')) LIKE '%remote%'     THEN TRUE
     ELSE NULL
   END                                        AS is_remote,
 
-  (b.j->>'contract_type')                   AS contract_type_raw,
+  (b.j->>'contract_type')                    AS contract_type_raw,
 
-  NULLIF(b.j->>'min_amount','')::numeric    AS salary_min,
-  NULLIF(b.j->>'max_amount','')::numeric    AS salary_max,
-  NULLIF(b.j->>'currency','')               AS currency,
+  NULLIF(b.j->>'min_amount','')::numeric     AS salary_min,
+  NULLIF(b.j->>'max_amount','')::numeric     AS salary_max,
+  NULLIF(b.j->>'currency','')                AS currency,
 
-  b.j->>'description'                       AS description_raw,
-  b.j->>'emails'                            AS emails_raw
+  b.j->>'description'                        AS description_raw,
+  b.j->>'emails'                             AS emails_raw
 FROM base b;
