@@ -29,6 +29,7 @@ This service turns raw job posts from multiple sources into **canonical, query-r
 
 ## Repository layout
 
+```text
 .
 ├── api/                      # Thin FastAPI app (health now; search endpoints later)
 │   └── main.py
@@ -54,13 +55,16 @@ This service turns raw job posts from multiple sources into **canonical, query-r
 │       └── 40_matching.sql
 ├── infra/                    # Placeholder for IaC/deploy
 ├── scripts/                  # Helper scripts (optional)
-├── .github/workflows/
-│   └── nightly.yml           # Nightly SQL transforms on main
+├── .github/
+│   └── workflows/
+│       └── nightly.yml       # Nightly SQL transforms on main
 ├── .env                      # Local config (gitignored)
 ├── .env.sample               # Template for .env
 ├── requirements.txt          # Minimal runtime deps
 ├── Makefile                  # install, api, worker, run-sql, nightly
 └── docs/                     # Business + engineering docs
+
+```
 
 ## Environment & config
 
