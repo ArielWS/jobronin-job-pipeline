@@ -8,28 +8,40 @@ WITH map AS (
     ON s.company_domain IS NOT NULL AND util.same_org_domain(gc.website_domain, s.company_domain)
   LEFT JOIN gold.company gc2
     ON gc.company_id IS NULL
-   AND s.contact_email_root IS NOT NULL AND NOT util.is_generic_email_domain(s.contact_email_root)
-   AND gc2.name_norm = util.company_name_norm(s.company_name)
+   AND s.contact_email_root IS NOT NULL AND util.is_generic_email_domain(s.contact_email_root)=FALSE
+   AND util.company_name_norm(gc2.name) = util.company_name_norm(s.company_name)
   LEFT JOIN gold.company gc3
     ON gc.company_id IS NULL AND gc2.company_id IS NULL
-   AND gc3.name_norm = util.company_name_norm(s.company_name)
+   AND util.company_name_norm(gc3.name) = util.company_name_norm(s.company_name)
   WHERE COALESCE(gc.company_id, gc2.company_id, gc3.company_id) IS NOT NULL
 ),
 best AS (
   SELECT DISTINCT ON (company_id)
     company_id,
-    (SELECT s1.company_industry_raw   FROM map s1 WHERE s1.company_id = m.company_id ORDER BY has_site DESC, length(coalesce(s1.company_industry_raw,'')) DESC LIMIT 1) AS industry_best,
-    (SELECT s1.company_size_raw       FROM map s1 WHERE s1.company_id = m.company_id ORDER BY has_site DESC, length(coalesce(s1.company_size_raw,'')) DESC LIMIT 1)     AS size_best,
-    (SELECT s1.company_description_raw FROM map s1 WHERE s1.company_id = m.company_id ORDER BY has_site DESC, length(coalesce(s1.company_description_raw,'')) DESC LIMIT 1) AS desc_best,
-    (SELECT s1.company_logo_url       FROM map s1 WHERE s1.company_id = m.company_id ORDER BY has_site DESC, length(coalesce(s1.company_logo_url,'')) DESC LIMIT 1)       AS logo_best
+    (SELECT s1.company_industry_raw
+     FROM map s1 WHERE s1.company_id = m.company_id
+     ORDER BY has_site DESC, length(coalesce(s1.company_industry_raw,'')) DESC
+     LIMIT 1) AS industry_best,
+    (SELECT s1.company_size_raw
+     FROM map s1 WHERE s1.company_id = m.company_id
+     ORDER BY has_site DESC, length(coalesce(s1.company_size_raw,'')) DESC
+     LIMIT 1) AS size_best,
+    (SELECT s1.company_description_raw
+     FROM map s1 WHERE s1.company_id = m.company_id
+     ORDER BY has_site DESC, length(coalesce(s1.company_description_raw,'')) DESC
+     LIMIT 1) AS desc_best,
+    (SELECT s1.company_logo_url
+     FROM map s1 WHERE s1.company_id = m.company_id
+     ORDER BY has_site DESC, length(coalesce(s1.company_logo_url,'')) DESC
+     LIMIT 1) AS logo_best
   FROM map m
 )
 UPDATE gold.company gc
 SET
-  industry_raw = COALESCE(gc.industry_raw, NULLIF(b.industry_best,'')),
-  size_raw     = COALESCE(gc.size_raw,     NULLIF(b.size_best,'')),
-  description  = COALESCE(gc.description,  NULLIF(b.desc_best,'')),
-  logo_url     = COALESCE(gc.logo_url,     NULLIF(b.logo_best,'')),
+  industry_raw = COALESCE(industry_raw, NULLIF(b.industry_best,'')),
+  size_raw     = COALESCE(size_raw,     NULLIF(b.size_best,'')),
+  description  = COALESCE(description,  NULLIF(b.desc_best,'')),
+  logo_url     = COALESCE(logo_url,     NULLIF(b.logo_best,'')),
   updated_at   = now()
 FROM best b
 WHERE b.company_id = gc.company_id;
