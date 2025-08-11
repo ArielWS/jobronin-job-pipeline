@@ -6,12 +6,12 @@ WITH cand AS (
   FROM silver.unified s
   LEFT JOIN gold.company gc
     ON (s.company_domain IS NOT NULL AND util.same_org_domain(gc.website_domain, s.company_domain))
-    OR (s.company_domain IS NULL AND gc.name_norm = util.company_name_norm(s.company_name))
+    OR (s.company_domain IS NULL AND util.company_name_norm(gc.name) = util.company_name_norm(s.company_name))
   WHERE gc.company_id IS NULL
     AND s.company_name IS NOT NULL AND btrim(s.company_name) <> ''
 )
 INSERT INTO gold.company (name)
 SELECT c.company_name
 FROM cand c
-LEFT JOIN gold.company gc ON gc.name_norm = c.name_norm
+LEFT JOIN gold.company gc ON util.company_name_norm(gc.name) = c.name_norm
 WHERE gc.company_id IS NULL AND c.email_root IS NOT NULL;
