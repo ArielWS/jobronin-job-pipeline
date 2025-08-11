@@ -26,5 +26,8 @@ SELECT
   js.currency                             AS currency,
 
   js.description                          AS description_raw,
-  js.emails                               AS emails_raw
+  js.emails                               AS emails_raw,
+  util.email_domain(NULLIF(js.emails,''))                   AS contact_email_domain,
+  util.url_host(COALESCE(NULLIF(js.job_url_direct,''), js.job_url)) AS apply_domain
+
 FROM public.jobspy_job_scrape js;
