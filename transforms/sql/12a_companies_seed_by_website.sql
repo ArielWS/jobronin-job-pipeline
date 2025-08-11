@@ -11,5 +11,5 @@ SELECT c.company_name, c.website_root
 FROM cand c
 LEFT JOIN gold.company gc
   ON (c.website_root IS NOT NULL AND util.same_org_domain(gc.website_domain, c.website_root))
-  OR (c.website_root IS NULL AND gc.name_norm = c.name_norm)
+  OR (c.website_root IS NULL AND util.company_name_norm(gc.name) = c.name_norm)
 WHERE gc.company_id IS NULL;
