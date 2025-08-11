@@ -1,3 +1,4 @@
+-- transforms/sql/04_util_functions.sql
 CREATE SCHEMA IF NOT EXISTS util;
 CREATE EXTENSION IF NOT EXISTS plpgsql;
 
@@ -60,7 +61,7 @@ SELECT CASE
 END
 $$;
 
--- consider parent/child domains same org
+-- treat parent/child domains as same org
 CREATE OR REPLACE FUNCTION util.same_org_domain(d1 text, d2 text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
 SELECT CASE
@@ -70,4 +71,20 @@ SELECT CASE
   WHEN lower(d2) LIKE '%.' || lower(d1) THEN TRUE
   ELSE FALSE
 END
+$$;
+
+-- NEW: normalize company names (drop legal suffixes, punctuation)
+CREATE OR REPLACE FUNCTION util.company_name_norm(n text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+SELECT NULLIF(
+  regexp_replace(
+    regexp_replace(
+      lower(coalesce(n,'')),
+      '\b(gmbh|ag|se|s\.r\.o\.|sp\. z o\.o\.|llc|inc\.?|ltd\.?|bv|sarl|sas|gmbh & co\. kg|kg|oy|ab)\b',
+      '', 'g'
+    ),
+    '[^a-z0-9 ]+', '', 'g'
+  ),
+  ''
+)
 $$;
