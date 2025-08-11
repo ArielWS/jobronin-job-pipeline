@@ -64,14 +64,20 @@ SELECT
   b.j->>'description'                        AS description_raw,
   b.j->>'emails'                             AS emails_raw,
 
-  -- Company website + root domain from profile (handles /karriere etc.)
+  -- Company website + root domain
   (b.j->'company_profile'->>'website')                           AS company_website,
   util.org_domain(util.url_host(b.j->'company_profile'->>'website')) AS company_domain,
 
-  -- Email/apply domains and their org roots
+  -- Email/apply domains + roots
   util.email_domain(NULLIF(b.j->>'emails',''))                    AS contact_email_domain,
   util.org_domain(util.email_domain(NULLIF(b.j->>'emails','')))   AS contact_email_root,
   util.url_host(COALESCE(NULLIF(b.j->>'job_url_direct',''), b.j->>'job_url')) AS apply_domain,
-  util.org_domain(util.url_host(COALESCE(NULLIF(b.j->>'job_url_direct',''), b.j->>'job_url'))) AS apply_root
+  util.org_domain(util.url_host(COALESCE(NULLIF(b.j->>'job_url_direct',''), b.j->>'job_url'))) AS apply_root,
+
+  -- NEW: company enrichment fields (from company_profile)
+  (b.j->'company_profile'->>'employees')     AS company_size_raw,
+  (b.j->'company_profile'->>'industries')    AS company_industry_raw,
+  (b.j->'company_profile'->>'logo_url')      AS company_logo_url,
+  NULL::text                                 AS company_description_raw
 
 FROM base b;
