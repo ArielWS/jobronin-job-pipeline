@@ -19,7 +19,10 @@ SELECT
   salary_max::numeric             AS salary_max,
   currency,
   description_raw,
-  emails_raw
+  emails_raw,
+  contact_email_domain,
+  apply_domain
+
 FROM silver.jobspy
 
 UNION ALL
@@ -44,5 +47,8 @@ SELECT
   salary_max::numeric             AS salary_max,
   currency,
   description_raw,
-  emails_raw
+  emails_raw,
+  contact_email_domain,
+  apply_domain
+
 FROM silver.stepstone;
