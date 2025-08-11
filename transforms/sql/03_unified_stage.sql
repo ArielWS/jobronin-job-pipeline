@@ -20,9 +20,12 @@ SELECT
   currency,
   description_raw,
   emails_raw,
+  company_website,
+  company_domain,
   contact_email_domain,
-  apply_domain
-
+  contact_email_root,
+  apply_domain,
+  apply_root
 FROM silver.jobspy
 
 UNION ALL
@@ -48,7 +51,10 @@ SELECT
   currency,
   description_raw,
   emails_raw,
+  company_website,
+  company_domain,
   contact_email_domain,
-  apply_domain
-
+  contact_email_root,
+  apply_domain,
+  apply_root
 FROM silver.stepstone;
