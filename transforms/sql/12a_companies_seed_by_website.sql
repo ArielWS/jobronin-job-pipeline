@@ -4,7 +4,9 @@ WITH cand AS (
     util.company_name_norm(company_name) AS name_norm,
     NULLIF(company_domain,'')            AS website_root
   FROM silver.unified
-  WHERE company_name IS NOT NULL AND btrim(company_name) <> ''
+  WHERE company_name IS NOT NULL
+    AND btrim(company_name) <> ''
+    AND util.company_name_norm(company_name) IS NOT NULL
 )
 INSERT INTO gold.company (name, website_domain)
 SELECT cnd.company_name, cnd.website_root
