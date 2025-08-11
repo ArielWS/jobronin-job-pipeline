@@ -7,9 +7,12 @@ WITH cand AS (
   WHERE company_name IS NOT NULL AND btrim(company_name) <> ''
 )
 INSERT INTO gold.company (name, website_domain)
-SELECT c.company_name, c.website_root
-FROM cand c
-LEFT JOIN gold.company gc
-  ON (c.website_root IS NOT NULL AND util.same_org_domain(gc.website_domain, c.website_root))
-  OR (c.website_root IS NULL AND util.company_name_norm(gc.name) = c.name_norm)
-WHERE gc.company_id IS NULL;
+SELECT cnd.company_name, cnd.website_root
+FROM cand cnd
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM gold.company gc
+  WHERE
+    (cnd.website_root IS NOT NULL AND util.same_org_domain(gc.website_domain, cnd.website_root))
+    OR (util.company_name_norm(gc.name) = cnd.name_norm)
+);
