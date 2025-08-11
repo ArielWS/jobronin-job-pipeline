@@ -88,3 +88,19 @@ SELECT NULLIF(
   ''
 )
 $$;
+-- Extract the first valid email address from a noisy string
+CREATE OR REPLACE FUNCTION util.first_email(t text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+SELECT (regexp_match(coalesce(t,''), '([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})','i'))[1]
+$$;
+
+-- Detect common ATS hosts (we'll separate them from real apply domains)
+CREATE OR REPLACE FUNCTION util.is_ats_host(h text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+SELECT CASE
+  WHEN h IS NULL THEN FALSE
+  WHEN h ~ '(greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|bamboohr\.com|smartrecruiters\.com|recruitee\.com|ashbyhq\.com|jobs\.personio\.de|personio\.com|icims\.com|teamtailor\.com)'
+    THEN TRUE
+  ELSE FALSE
+END
+$$;

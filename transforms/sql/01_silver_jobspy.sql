@@ -27,7 +27,6 @@ SELECT
   js.description                          AS description_raw,
   js.emails                               AS emails_raw,
 
-  -- Company website (ignore aggregators) + root domain
   CASE
     WHEN util.is_aggregator_host(util.url_host(COALESCE(NULLIF(js.company_url_direct,''), NULLIF(js.company_url,''))))
       THEN NULL
@@ -39,13 +38,11 @@ SELECT
     ELSE util.org_domain(util.url_host(COALESCE(NULLIF(js.company_url_direct,''), NULLIF(js.company_url,''))))
   END AS company_domain,
 
-  -- Email/apply domains + roots
-  util.email_domain(NULLIF(js.emails,''))                                        AS contact_email_domain,
-  util.org_domain(util.email_domain(NULLIF(js.emails,'')))                       AS contact_email_root,
-  util.url_host(COALESCE(NULLIF(js.job_url_direct,''), js.job_url))              AS apply_domain,
-  util.org_domain(util.url_host(COALESCE(NULLIF(js.job_url_direct,''), js.job_url))) AS apply_root,
+  util.email_domain(util.first_email(js.emails))                                        AS contact_email_domain,
+  util.org_domain(util.email_domain(util.first_email(js.emails)))                       AS contact_email_root,
+  util.url_host(COALESCE(NULLIF(js.job_url_direct,''), js.job_url))                     AS apply_domain,
+  util.org_domain(util.url_host(COALESCE(NULLIF(js.job_url_direct,''), js.job_url)))    AS apply_root,
 
-  -- NEW: company enrichment fields
   js.company_num_employees                  AS company_size_raw,
   js.company_industry                       AS company_industry_raw,
   js.company_logo                           AS company_logo_url,
