@@ -8,10 +8,10 @@ WITH map AS (
   LEFT JOIN gold.company gc2
     ON gc.company_id IS NULL
    AND s.contact_email_root IS NOT NULL AND NOT util.is_generic_email_domain(s.contact_email_root)
-   AND gc2.name_norm = util.company_name_norm(s.company_name)
+   AND util.company_name_norm(gc2.name) = util.company_name_norm(s.company_name)
   LEFT JOIN gold.company gc3
     ON gc.company_id IS NULL AND gc2.company_id IS NULL
-   AND gc3.name_norm = util.company_name_norm(s.company_name)
+   AND util.company_name_norm(gc3.name) = util.company_name_norm(s.company_name)
   WHERE s.company_name IS NOT NULL AND btrim(s.company_name) <> ''
 )
 INSERT INTO gold.company_alias (company_id, alias)
