@@ -1,7 +1,7 @@
 CREATE OR REPLACE VIEW silver.unified AS
 SELECT
   source,
-  source_id::text                 AS source_id,
+  source_id::text AS source_id,
   source_row_url,
   job_url_direct,
   title_raw,
@@ -15,8 +15,8 @@ SELECT
   date_posted,
   is_remote,
   contract_type_raw,
-  salary_min::numeric             AS salary_min,
-  salary_max::numeric             AS salary_max,
+  salary_min::numeric AS salary_min,
+  salary_max::numeric AS salary_max,
   currency,
   description_raw,
   emails_raw,
@@ -25,14 +25,18 @@ SELECT
   contact_email_domain,
   contact_email_root,
   apply_domain,
-  apply_root
+  apply_root,
+  company_size_raw,
+  company_industry_raw,
+  company_logo_url,
+  company_description_raw
 FROM silver.jobspy
 
 UNION ALL
 
 SELECT
   source,
-  source_id::text                 AS source_id,
+  source_id::text AS source_id,
   source_row_url,
   job_url_direct,
   title_raw,
@@ -46,8 +50,8 @@ SELECT
   date_posted,
   is_remote,
   contract_type_raw,
-  salary_min::numeric             AS salary_min,
-  salary_max::numeric             AS salary_max,
+  salary_min::numeric AS salary_min,
+  salary_max::numeric AS salary_max,
   currency,
   description_raw,
   emails_raw,
@@ -56,5 +60,9 @@ SELECT
   contact_email_domain,
   contact_email_root,
   apply_domain,
-  apply_root
+  apply_root,
+  company_size_raw,
+  company_industry_raw,
+  company_logo_url,
+  company_description_raw
 FROM silver.stepstone;
