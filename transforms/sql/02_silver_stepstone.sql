@@ -64,5 +64,8 @@ SELECT
   NULLIF(b.j->>'currency','')                AS currency,
 
   b.j->>'description'                        AS description_raw,
-  b.j->>'emails'                             AS emails_raw
+  b.j->>'emails'                             AS emails_raw,
+  util.email_domain(NULLIF(b.j->>'emails',''))              AS contact_email_domain,
+  util.url_host(COALESCE(NULLIF(b.j->>'job_url_direct',''), b.j->>'job_url')) AS apply_domain
+
 FROM base b;
