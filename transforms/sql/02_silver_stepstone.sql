@@ -1,4 +1,3 @@
--- transforms/sql/02_silver_stepstone.sql
 CREATE OR REPLACE VIEW silver.stepstone AS
 WITH raw AS (
   SELECT
@@ -8,7 +7,6 @@ WITH raw AS (
     ss.job_data       AS job_data_text
   FROM public.stepstone_job_scrape ss
 ),
--- Replace invalid JSON tokens with null so ::jsonb succeeds
 clean AS (
   SELECT
     source,
@@ -17,10 +15,10 @@ clean AS (
     regexp_replace(
       regexp_replace(
         regexp_replace(
-          regexp_replace(job_data_text, ':\s*NaN(\s*[,}])',        ': null\1', 'g'),
-          ':\s*Infinity(\s*[,}])',   ': null\1', 'g'),
-        ':\s*-Infinity(\s*[,}])',    ': null\1', 'g'),
-      ':\s*None(\s*[,}])',           ': null\1', 'g'
+          regexp_replace(job_data_text, ':\s*NaN(\s*[,}])', ': null\1', 'g'),
+          ':\s*Infinity(\s*[,}])',       ': null\1', 'g'),
+        ':\s*-Infinity(\s*[,}])',        ': null\1', 'g'),
+      ':\s*None(\s*[,}])',               ': null\1', 'g'
     ) AS job_data_clean
   FROM raw
 ),
@@ -65,7 +63,15 @@ SELECT
 
   b.j->>'description'                        AS description_raw,
   b.j->>'emails'                             AS emails_raw,
-  util.email_domain(NULLIF(b.j->>'emails',''))              AS contact_email_domain,
-  util.url_host(COALESCE(NULLIF(b.j->>'job_url_direct',''), b.j->>'job_url')) AS apply_domain
+
+  -- Company website + root domain from profile (handles /karriere etc.)
+  (b.j->'company_profile'->>'website')                           AS company_website,
+  util.org_domain(util.url_host(b.j->'company_profile'->>'website')) AS company_domain,
+
+  -- Email/apply domains and their org roots
+  util.email_domain(NULLIF(b.j->>'emails',''))                    AS contact_email_domain,
+  util.org_domain(util.email_domain(NULLIF(b.j->>'emails','')))   AS contact_email_root,
+  util.url_host(COALESCE(NULLIF(b.j->>'job_url_direct',''), b.j->>'job_url')) AS apply_domain,
+  util.org_domain(util.url_host(COALESCE(NULLIF(b.j->>'job_url_direct',''), b.j->>'job_url'))) AS apply_root
 
 FROM base b;
