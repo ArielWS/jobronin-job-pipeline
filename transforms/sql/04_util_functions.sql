@@ -74,30 +74,30 @@ END
 $$;
 
 -- NEW: normalize company names (drop legal suffixes, punctuation)
-CREATE OR REPLACE FUNCTION util.company_name_norm(txt text)
+CREATE OR REPLACE FUNCTION util.company_name_norm(n text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  WITH raw AS (SELECT lower(coalesce(txt,'')) s),
-  -- light deaccent without requiring unaccent extension
-  d1 AS (SELECT regexp_replace(s,'[àáâãäåāæ]','a','g') s FROM raw),
-  d2 AS (SELECT regexp_replace(s,'[èéêëē]','e','g') s FROM d1),
-  d3 AS (SELECT regexp_replace(s,'[ìíîïī]','i','g') s FROM d2),
-  d4 AS (SELECT regexp_replace(s,'[òóôõöō]','o','g') s FROM d3),
-  d5 AS (SELECT regexp_replace(s,'[ùúûüū]','u','g') s FROM d4),
-  cleaned AS (
-    -- normalize hyphens/nbspace then strip punctuation
-    SELECT regexp_replace(regexp_replace(s, '[\u00A0–—\-]+',' ','g'), '[^a-z0-9&.+ ]+', ' ', 'g') s FROM d5
-  ),
-  strip_legal AS (
-    SELECT regexp_replace(
-      s,
-      '\b(gmbh|ag|se|kgaa|kg|ug|bv|b\.v\.|sarl|sas|ltd|plc|llc|inc|oy|ab|as|s\.r\.o\.|sp\. z o\.o\.)\b',
-      ' ','g'
-    ) s FROM cleaned
-  ),
-  strip_noise AS (
-    SELECT regexp_replace(s, '\b(group|holding|english|deutschland|germany)\b', ' ', 'g') s FROM strip_legal
-  ),
-  squashed AS (SELECT regexp_replace(s,'\s+',' ','g') s FROM strip_noise)
+  WITH raw AS (SELECT lower(coalesce(n,'')) s),
+       d1  AS (SELECT regexp_replace(s,'[àáâãäåāæ]','a','g') s FROM raw),
+       d2  AS (SELECT regexp_replace(s,'[èéêëē]','e','g') s FROM d1),
+       d3  AS (SELECT regexp_replace(s,'[ìíîïī]','i','g') s FROM d2),
+       d4  AS (SELECT regexp_replace(s,'[òóôõöō]','o','g') s FROM d3),
+       d5  AS (SELECT regexp_replace(s,'[ùúûüū]','u','g') s FROM d4),
+       cleaned AS (
+         SELECT regexp_replace(regexp_replace(s,'[\u00A0–—\-]+',' ','g'),
+                               '[^a-z0-9&.+ ]+', ' ', 'g') s FROM d5
+       ),
+       strip_legal AS (
+         SELECT regexp_replace(
+           s,
+           '\b(gmbh|ag|se|kgaa|kg|ug|bv|b\.v\.|sarl|sas|ltd|plc|llc|inc|oy|ab|as|s\.r\.o\.|sp\. z o\.o\.)\b',
+           ' ','g'
+         ) s FROM cleaned
+       ),
+       strip_noise AS (
+         SELECT regexp_replace(s, '\b(group|holding|english|deutschland|germany)\b', ' ', 'g')
+         s FROM strip_legal
+       ),
+       squashed AS (SELECT regexp_replace(s,'\s+',' ','g') s FROM strip_noise)
   SELECT NULLIF(trim(s),'') FROM squashed;
 $$;
 -- Extract the first valid email address from a noisy string
