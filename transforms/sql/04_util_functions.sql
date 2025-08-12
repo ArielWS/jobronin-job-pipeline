@@ -137,3 +137,23 @@ SELECT CASE
   ELSE FALSE
 END
 $$;
+
+
+-- Strip a trailing language marker like " - English", "(DE)", " – Deutsch", etc.
+CREATE OR REPLACE FUNCTION util.company_name_strip_lang_suffix(n text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+SELECT btrim(
+  regexp_replace(
+    coalesce(n,''),
+    '\s*(?:-|–|—)?\s*(english|deutsch|german|français|francais|español|spanish|italiano|portugu[eê]s|nederlands|polski|русский|рус|\(en\)|\(de\)|\(fr\)|\(es\)|\(it\)|\(pt\)|\(nl\)|\(pl\)|\(ru\))\s*$',
+    '',
+    'gi'
+  )
+)
+$$;
+
+-- Normalization that first strips language suffixes, then applies your base normalizer
+CREATE OR REPLACE FUNCTION util.company_name_norm_langless(n text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+SELECT util.company_name_norm(util.company_name_strip_lang_suffix(n))
+$$;
