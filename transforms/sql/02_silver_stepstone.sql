@@ -131,6 +131,18 @@ norm AS (
     COALESCE(f.jd #>> '{company,logoUrl}',  f.jd ->> 'companyLogoUrl')      AS company_logo_url,
     COALESCE(f.jd ->> 'companyDescription', f.jd #>> '{company,description}') AS company_description_raw
   FROM fields f
+),
+-- Drop obvious junk: both company & title are placeholders AND no usable URL/email.
+keep AS (
+  SELECT *
+  FROM norm
+  WHERE NOT (
+    util.is_placeholder_company_name(company_name) AND
+    util.is_placeholder_company_name(title_raw) AND
+    job_url_direct IS NULL AND
+    company_website IS NULL AND
+    emails_raw IS NULL
+  )
 )
 SELECT
   source, source_id, source_row_url, job_url_direct,
@@ -143,4 +155,4 @@ SELECT
   apply_domain, apply_root,
   company_website, company_domain,
   company_size_raw, company_industry_raw, company_logo_url, company_description_raw
-FROM norm;
+FROM keep;
