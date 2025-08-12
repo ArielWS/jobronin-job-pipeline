@@ -132,17 +132,20 @@ norm AS (
     COALESCE(f.jd ->> 'companyDescription', f.jd #>> '{company,description}') AS company_description_raw
   FROM fields f
 ),
--- Drop obvious junk: both company & title are placeholders AND no usable URL/email.
+-- Stronger junk filter:
+-- 1) Drop rows where title is a placeholder ('not found', etc.).
+-- 2) Drop rows that have no company *and* no URL/email (there’s nothing to resolve).
 keep AS (
   SELECT *
   FROM norm
-  WHERE NOT (
-    util.is_placeholder_company_name(company_name) AND
-    util.is_placeholder_company_name(title_raw) AND
-    job_url_direct IS NULL AND
-    company_website IS NULL AND
-    emails_raw IS NULL
-  )
+  WHERE
+    -- 1) must have a non-placeholder title
+    NOT util.is_placeholder_company_name(title_raw)
+    -- 2) also require at least one signal: publisher OR (apply url / company website / email)
+    AND (
+      company_name IS NOT NULL
+      OR COALESCE(job_url_direct, company_website, emails_raw) IS NOT NULL
+    )
 )
 SELECT
   source, source_id, source_row_url, job_url_direct,
