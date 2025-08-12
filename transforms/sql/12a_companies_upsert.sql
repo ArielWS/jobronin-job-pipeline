@@ -1,8 +1,5 @@
 -- transforms/sql/12a_companies_upsert.sql
--- Minimal, JSON-proof company upsert pulling directly from raw tables:
---  - JobSpy: name + site/email/apply derived from plain URL/email fields
---  - StepStone: name-only (no job_data parsing)
---  - Brand-aware domain claim; alias & evidence; no-regress; no JSON access anywhere
+-- JSON-free, collision-free company upsert.
 
 BEGIN;
 
@@ -20,14 +17,16 @@ WITH src_jobspy AS (
       WHEN util.is_generic_email_domain(util.email_domain(util.first_email(js.emails))) THEN NULL
       ELSE util.email_domain(util.first_email(js.emails))
     END                                                 AS email_root_raw,
-    -- apply root from job_url(_direct) host (aggregator/ATS later filtered)
+    -- apply root from job link host
     util.org_domain(util.url_host(COALESCE(js.job_url_direct, js.job_url)))          AS apply_root_raw
   FROM public.jobspy_job_scrape js
   WHERE js.company IS NOT NULL
     AND btrim(js.company) <> ''
     AND util.company_name_norm_langless(js.company) IS NOT NULL
+    AND util.is_placeholder_company_name(js.company) = FALSE
 ),
 src_stepstone AS (
+  -- Name-only; do not touch job_data at all
   SELECT DISTINCT
     'stepstone'::text                      AS source,
     st.id::text                            AS source_id,
@@ -41,15 +40,17 @@ src_stepstone AS (
   WHERE st.client_name IS NOT NULL
     AND btrim(st.client_name) <> ''
     AND util.company_name_norm_langless(st.client_name) IS NOT NULL
+    AND util.is_placeholder_company_name(st.client_name) = FALSE
 ),
 src AS (
   SELECT * FROM src_jobspy
   UNION ALL
   SELECT * FROM src_stepstone
 ),
+
+-- One candidate per normalized name (prefer real site host)
 best_per_name AS (
-  -- choose ONE best candidate per normalized name; prefer real site host over email
-  SELECT DISTINCT ON (name_norm)
+  SELECT DISTINCT ON (s.name_norm)
     s.*,
     CASE
       WHEN s.site_root_raw IS NOT NULL
@@ -61,7 +62,6 @@ best_per_name AS (
       ELSE NULL
     END AS org_root
   FROM src s
-  WHERE util.is_placeholder_company_name(s.company_name) = FALSE
   ORDER BY
     s.name_norm,
     (s.site_root_raw IS NOT NULL
@@ -69,6 +69,7 @@ best_per_name AS (
      AND NOT util.is_ats_host(s.site_root_raw)
      AND NOT util.is_career_host(s.site_root_raw)) DESC
 ),
+
 best_per_name_brand AS (
   SELECT
     b.*,
@@ -82,8 +83,28 @@ best_per_name_brand AS (
     ), ''::text) AS brand_key_norm
   FROM best_per_name b
 ),
+
+-- Defensive: dedupe again on name_norm before INSERT to avoid "affect row a second time"
+dedup_names AS (
+  SELECT DISTINCT ON (name_norm)
+    name_norm, company_name, brand_key_norm
+  FROM best_per_name_brand
+  ORDER BY name_norm
+),
+
+-- 1) Insert one row per name_norm (no attrs → avoid JSON entirely)
+ins_names AS (
+  INSERT INTO gold.company AS gc (name, brand_key)
+  SELECT d.company_name, COALESCE(d.brand_key_norm,'')
+  FROM dedup_names d
+  ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO UPDATE
+    SET name      = CASE WHEN util.is_placeholder_company_name(gc.name) THEN EXCLUDED.name ELSE gc.name END,
+        brand_key = COALESCE(gc.brand_key, EXCLUDED.brand_key)
+  RETURNING gc.company_id, gc.name, gc.name_norm
+),
+
+-- Domain winner: one row per (org_root, brand) gets the site set
 domain_winner AS (
-  -- ONE row per (org_root, brand_key) is allowed to set website_domain
   SELECT DISTINCT ON (org_root, brand_key_norm)
     d.*
   FROM best_per_name_brand d
@@ -91,18 +112,7 @@ domain_winner AS (
   ORDER BY d.org_root, d.brand_key_norm
 ),
 
--- 1) Insert one row per name_norm (names only; no attrs to avoid JSON entirely)
-ins_names AS (
-  INSERT INTO gold.company AS gc (name, brand_key)
-  SELECT n.company_name, COALESCE(n.brand_key_norm,'')
-  FROM best_per_name_brand n
-  ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO UPDATE
-    SET name      = CASE WHEN util.is_placeholder_company_name(gc.name) THEN EXCLUDED.name ELSE gc.name END,
-        brand_key = COALESCE(gc.brand_key, EXCLUDED.brand_key)
-  RETURNING gc.company_id, gc.name, gc.name_norm
-),
-
--- 2) Set website_domain/brand for the winners only (prevents domain collisions)
+-- 2) Set website_domain/brand for winners only (no multi-update collisions)
 upd_domain AS (
   UPDATE gold.company gc
   SET website_domain = COALESCE(gc.website_domain, dw.org_root),
@@ -113,16 +123,12 @@ upd_domain AS (
   RETURNING 1
 ),
 
--- 3) Resolve every source row to company_id (prefer domain_winner match)
+-- 3) Resolve each source row to a company and record evidence
 resolved AS (
   SELECT
-    s.source,
-    s.source_id,
-    s.source_row_url,
-    s.company_name,
-    s.name_norm,
-    s.apply_root_raw,
-    s.email_root_raw,
+    s.source, s.source_id, s.source_row_url,
+    s.company_name, s.name_norm,
+    s.apply_root_raw, s.email_root_raw,
     CASE
       WHEN s.site_root_raw IS NOT NULL
            AND NOT util.is_aggregator_host(s.site_root_raw)
@@ -154,7 +160,6 @@ resolved AS (
   FROM src s
 ),
 
--- Aliases: every observed name to its company
 add_alias AS (
   INSERT INTO gold.company_alias (company_id, alias)
   SELECT DISTINCT r.company_id, r.company_name
@@ -164,7 +169,6 @@ add_alias AS (
   RETURNING 1
 ),
 
--- Evidence: per-company PK (company_id, kind, value)
 add_evidence AS (
   INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
   SELECT DISTINCT r.company_id, kv.kind, kv.val, r.source, r.source_id
