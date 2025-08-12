@@ -18,8 +18,10 @@ INSERT INTO gold.company (name)
 SELECT company_name
 FROM picked
 WHERE NOT EXISTS (
-  SELECT 1 FROM gold.company gc
-  WHERE (gc.website_domain IS NOT NULL AND picked.website_root IS NOT NULL
-         AND util.same_org_domain(gc.website_domain, picked.website_root))
+  SELECT 1
+  FROM gold.company gc
+  WHERE picked.website_root IS NOT NULL
+    AND gc.website_domain IS NOT NULL
+    AND util.same_org_domain(gc.website_domain, picked.website_root)
 )
-ON CONFLICT (name_norm) DO NOTHING;
+ON CONFLICT DO NOTHING;
