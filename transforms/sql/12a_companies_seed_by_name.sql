@@ -1,15 +1,25 @@
+WITH cand AS (
+  SELECT DISTINCT
+    s.company_name,
+    util.company_name_norm(s.company_name) AS name_norm,
+    util.org_domain(NULLIF(s.company_domain,'')) AS website_root
+  FROM silver.unified s
+  WHERE s.company_name IS NOT NULL
+    AND btrim(s.company_name) <> ''
+    AND util.company_name_norm(s.company_name) IS NOT NULL
+),
+picked AS (
+  SELECT DISTINCT ON (name_norm)
+         company_name, name_norm, website_root
+  FROM cand
+  ORDER BY name_norm, website_root
+)
 INSERT INTO gold.company (name)
-SELECT DISTINCT s.company_name
-FROM silver.unified s
-WHERE s.company_name IS NOT NULL AND btrim(s.company_name) <> ''
-  AND util.company_name_norm(s.company_name) IS NOT NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM gold.company gc WHERE gc.name_norm = util.company_name_norm(s.company_name)
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM gold.company gc
-    JOIN LATERAL util.org_domain(NULLIF(s.company_domain,'')) od(root) ON TRUE
-    WHERE od.root IS NOT NULL AND gc.website_domain IS NOT NULL
-      AND util.same_org_domain(gc.website_domain, od.root)
-  );
+SELECT company_name
+FROM picked
+WHERE NOT EXISTS (
+  SELECT 1 FROM gold.company gc
+  WHERE (gc.website_domain IS NOT NULL AND picked.website_root IS NOT NULL
+         AND util.same_org_domain(gc.website_domain, picked.website_root))
+)
+ON CONFLICT (name_norm) DO NOTHING;

@@ -2,17 +2,24 @@ WITH cand AS (
   SELECT DISTINCT
     s.company_name,
     util.company_name_norm(s.company_name) AS name_norm,
-    CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL ELSE s.contact_email_root END AS email_root
+    CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL
+         ELSE s.contact_email_root END AS email_root
   FROM silver.unified s
-  WHERE s.company_name IS NOT NULL AND btrim(s.company_name) <> ''
+  WHERE s.company_name IS NOT NULL
+    AND btrim(s.company_name) <> ''
     AND util.company_name_norm(s.company_name) IS NOT NULL
 ),
-filtered AS (SELECT * FROM cand WHERE email_root IS NOT NULL)
+filtered AS (
+  SELECT * FROM cand WHERE email_root IS NOT NULL
+),
+picked AS (
+  SELECT DISTINCT ON (name_norm)
+         company_name, name_norm, email_root
+  FROM filtered
+  ORDER BY name_norm, email_root
+)
 INSERT INTO gold.company (name, website_domain)
-SELECT f.company_name, f.email_root
-FROM filtered f
-WHERE NOT EXISTS (
-  SELECT 1 FROM gold.company gc
-  WHERE gc.name_norm = f.name_norm
-     OR (gc.website_domain IS NOT NULL AND util.same_org_domain(gc.website_domain, f.email_root))
-);
+SELECT company_name, email_root
+FROM picked
+ON CONFLICT (name_norm) DO NOTHING
+ON CONFLICT ON CONSTRAINT company_website_domain_uidx DO NOTHING;
