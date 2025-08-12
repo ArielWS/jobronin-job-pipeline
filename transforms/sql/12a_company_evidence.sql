@@ -1,16 +1,19 @@
--- Derive website/email/apply evidence as org roots where applicable.
--- Compatible with per-company PK: PRIMARY KEY (company_id, kind, value)
-
 WITH m AS (
   SELECT
     s.source, s.source_id,
-    -- resolve company_id by name_norm (after the name-first upsert)
     (SELECT gc.company_id FROM gold.company gc
      WHERE gc.name_norm = util.company_name_norm(s.company_name)
      LIMIT 1) AS company_id,
-    util.org_domain(NULLIF(s.company_domain,'')) AS website_root,
+
+    -- build a website_root candidate from either explicit website or domain
+    COALESCE(
+      util.org_domain(util.url_host(NULLIF(s.company_website,''))),
+      util.org_domain(NULLIF(s.company_domain,''))
+    ) AS website_root,
+
     CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL
          ELSE s.contact_email_root END AS email_root,
+
     NULLIF(s.apply_root,'') AS apply_root
   FROM silver.unified s
   WHERE s.company_name IS NOT NULL
@@ -19,7 +22,12 @@ WITH m AS (
 ),
 ev AS (
   SELECT company_id, 'website'::text AS kind, website_root AS value, source, source_id
-  FROM m WHERE company_id IS NOT NULL AND website_root IS NOT NULL
+  FROM m
+  WHERE company_id IS NOT NULL
+    AND website_root IS NOT NULL
+    AND NOT util.is_aggregator_host(website_root)
+    AND NOT util.is_ats_host(website_root)
+    AND NOT util.is_career_host(website_root)
   UNION ALL
   SELECT company_id, 'email', email_root, source, source_id
   FROM m WHERE company_id IS NOT NULL AND email_root IS NOT NULL
