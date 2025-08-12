@@ -1,7 +1,7 @@
 -- One-pass, collision-free company upsert:
 -- 1) Pick one best row per name_norm (prefer real site, then richness) -> insert name-only.
 -- 2) Pick one winner per (org_root, brand_key) -> update website_domain/brand on that one row only.
--- 3) Resolve all source rows to company_id; write aliases & evidence; top-up attrs (no regress).
+-- 3) Resolve all rows to company_id; write aliases & evidence; top-up attrs (no regress).
 
 BEGIN;
 
@@ -17,10 +17,9 @@ WITH src AS (
     -- fillable attrs
     s.company_description_raw, s.company_size_raw, s.company_industry_raw, s.company_logo_url
   FROM silver.unified s
-  WHERE s.company_name IS NOT NULL AND btrim(s.company_name) <> ''
+  WHERE s.company_name IS NOT NULL
+    AND btrim(s.company_name) <> ''
     AND util.company_name_norm(s.company_name) IS NOT NULL
-    -- if you do have this util fn, keep it; else remove the line:
-    AND NOT util.is_placeholder_company_name(s.company_name)
 ),
 
 best_per_name AS (
@@ -68,7 +67,7 @@ best_per_name_brand AS (
 ),
 
 domain_winner AS (
-  -- choose ONE row per (org_root, brand_key) that will actually get the website_domain set
+  -- choose ONE row per (org_root, brand_key) that will actually get website_domain set
   SELECT DISTINCT ON (org_root, brand_key_norm)
     d.*
   FROM best_per_name_brand d
@@ -106,17 +105,25 @@ upd_domain AS (
   RETURNING 1
 ),
 
--- 3) Resolve each source row to company_id:
---    If it has an org_root that matches a chosen domain_winner, map to that winner.
---    Else, fall back to the company's own name_norm row we inserted above.
+-- 3) Resolve each source row to company_id and carry its best org_root_candidate for evidence
 resolved AS (
   SELECT
     s.source, s.source_id, s.source_row_url,
     s.company_name, s.name_norm,
     s.company_description_raw, s.company_size_raw, s.company_industry_raw, s.company_logo_url,
     s.apply_root_raw, s.email_root_raw,
+    -- org_root_candidate for evidence: prefer site if valid, else email
+    CASE
+      WHEN s.site_root_raw IS NOT NULL
+           AND NOT util.is_aggregator_host(s.site_root_raw)
+           AND NOT util.is_ats_host(s.site_root_raw)
+      THEN s.site_root_raw
+      WHEN s.email_root_raw IS NOT NULL
+      THEN s.email_root_raw
+      ELSE NULL
+    END AS org_root_candidate,
     COALESCE(
-      -- map by chosen domain winner
+      -- map by chosen domain winner first
       (SELECT gc.company_id
          FROM domain_winner dw
          JOIN gold.company gc ON gc.name_norm = dw.name_norm
@@ -147,26 +154,14 @@ add_alias AS (
   RETURNING 1
 ),
 
--- Evidence (per-company primary key: (company_id, kind, value))
+-- Evidence (per-company primary key: (company_id, kind, value)) — NO reference to "s" here
 add_evidence AS (
   INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
   SELECT DISTINCT r.company_id, kv.kind, kv.val, r.source, r.source_id
   FROM resolved r
   CROSS JOIN LATERAL (
     VALUES
-      ('website', CASE
-                    WHEN r.company_id IS NOT NULL THEN
-                      CASE
-                        WHEN s.site_root_raw IS NOT NULL
-                             AND NOT util.is_aggregator_host(s.site_root_raw)
-                             AND NOT util.is_ats_host(s.site_root_raw)
-                        THEN s.site_root_raw
-                        WHEN r.email_root_raw IS NOT NULL
-                        THEN r.email_root_raw
-                        ELSE NULL
-                      END
-                    ELSE NULL
-                  END),
+      ('website', r.org_root_candidate),
       ('email',   CASE WHEN r.email_root_raw IS NOT NULL
                            AND NOT util.is_generic_email_domain(r.email_root_raw)
                        THEN r.email_root_raw END),
@@ -175,13 +170,12 @@ add_evidence AS (
                            AND NOT util.is_ats_host(r.apply_root_raw)
                        THEN r.apply_root_raw END)
   ) AS kv(kind, val)
-  JOIN src s ON s.name_norm = r.name_norm  -- for site_root_raw in the VALUES above
   WHERE r.company_id IS NOT NULL AND kv.val IS NOT NULL
   ON CONFLICT (company_id, kind, value) DO NOTHING
   RETURNING 1
 )
 
--- Final non-regressive attribute top-up from the *best_per_name* winners only (higher quality than raw src)
+-- Final non-regressive attribute top-up from the best_per_name winners only (higher quality than raw src)
 UPDATE gold.company gc
 SET description  = COALESCE(gc.description,  bp.company_description_raw),
     size_raw     = COALESCE(gc.size_raw,     bp.company_size_raw),
