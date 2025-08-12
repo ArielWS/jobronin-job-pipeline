@@ -93,8 +93,9 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
            ' ','g') s
          FROM cleaned
        ),
+       -- keep this minimal: remove generic company “noise”, but NOT languages/countries
        strip_noise AS (
-         SELECT regexp_replace(s, '\b(group|holding|english|deutschland|germany)\b', ' ', 'g') s
+         SELECT regexp_replace(s, '\b(group|holding)\b', ' ', 'g') s
          FROM strip_legal
        ),
        squashed AS (SELECT regexp_replace(s,'\s+',' ','g') s FROM strip_noise)
