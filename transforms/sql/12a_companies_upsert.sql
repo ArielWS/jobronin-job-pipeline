@@ -62,12 +62,10 @@ dedup_name AS (
     CASE
       WHEN b.org_root IS NOT NULL THEN FALSE
       ELSE EXISTS (
-        SELECT 1
-        FROM gold.company gc
+        SELECT 1 FROM gold.company gc
         WHERE similarity(b.name_norm, gc.name_norm) >= 0.90
       ) OR EXISTS (
-        SELECT 1
-        FROM gold.company_alias ga
+        SELECT 1 FROM gold.company_alias ga
         WHERE similarity(b.name_norm, ga.alias_norm) >= 0.90
       )
     END AS is_fuzzy_dup
@@ -92,7 +90,7 @@ ins AS (
     ti.company_logo_url
   FROM to_insert ti
   WHERE ti.org_root IS NOT NULL
-  ON CONFLICT (website_domain, brand_key) DO UPDATE
+  ON CONFLICT ON CONSTRAINT company_domain_brand_uniq DO UPDATE
     SET name = CASE
                  WHEN util.is_placeholder_company_name(gold.company.name) THEN EXCLUDED.name
                  ELSE gold.company.name
@@ -114,7 +112,7 @@ ins_name AS (
     ti.company_logo_url
   FROM to_insert ti
   WHERE ti.org_root IS NULL
-  ON CONFLICT (name_norm) DO NOTHING
+  ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO NOTHING
   RETURNING company_id
 ),
 resolved AS (
