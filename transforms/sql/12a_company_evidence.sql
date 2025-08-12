@@ -11,7 +11,7 @@ WITH src AS (
     s.source_row_url,
     s.company_name,
     util.company_name_norm(s.company_name) AS name_norm,
-    -- candidates
+    -- candidates (already cleaned in silver)
     util.org_domain(NULLIF(s.company_domain,'')) AS site_root_raw,
     CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL ELSE s.contact_email_root END AS email_root_raw,
     NULLIF(s.apply_root,'') AS apply_root_raw
@@ -22,9 +22,7 @@ WITH src AS (
 ),
 
 resolved AS (
-  -- Find the matching company_id:
-  -- 1) prefer a domain match (if site_root_raw is a real site, not aggregator/ATS)
-  -- 2) else fall back to name_norm
+  -- Prefer mapping by valid site_root, else fall back to name_norm
   SELECT
     s.*,
     COALESCE(
