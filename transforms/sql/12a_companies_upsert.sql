@@ -1,6 +1,6 @@
 -- Deterministic, brand-aware, fuzzy-guarded upsert into gold.company from silver.unified.
--- Identity: (website_domain, brand_key) when we have a credible org root; else name_norm with fuzzy guard.
--- Always writes alias & evidence; upgrades placeholder names on conflict.
+-- Identity: prefer name_norm (so we can merge name-only rows) and set website_domain/brand_key when we learn them.
+-- Always writes alias & evidence; upgrades placeholder names; promotes domain later if needed.
 
 BEGIN;
 
@@ -76,43 +76,34 @@ to_insert AS (
   SELECT * FROM dedup_name
   WHERE (org_root IS NOT NULL) OR (is_fuzzy_dup = FALSE)
 ),
-ins AS (
-  -- 6) Case A: org_root known -> insert with domain (do NOT write to generated name_norm)
+-- 6) NAME-FIRST upsert:
+--    We upsert by name_norm so if a name-only row already exists (e.g., "SAP"),
+--    we update that row to add website_domain/brand_key instead of colliding.
+ins_namefirst AS (
   INSERT INTO gold.company (name, website_domain, brand_key,
                             description, size_raw, industry_raw, logo_url)
   SELECT
     ti.company_name,
-    ti.org_root,
-    ti.brand_key,
+    ti.org_root,           -- may be NULL
+    ti.brand_key,          -- may be NULL
     ti.company_description_raw,
     ti.company_size_raw,
     ti.company_industry_raw,
     ti.company_logo_url
   FROM to_insert ti
-  WHERE ti.org_root IS NOT NULL
-  ON CONFLICT ON CONSTRAINT company_domain_brand_uniq DO UPDATE
+  ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO UPDATE
     SET name = CASE
                  WHEN util.is_placeholder_company_name(gold.company.name) THEN EXCLUDED.name
                  ELSE gold.company.name
                END,
-        description  = COALESCE(gold.company.description,  EXCLUDED.description),
-        size_raw     = COALESCE(gold.company.size_raw,     EXCLUDED.size_raw),
-        industry_raw = COALESCE(gold.company.industry_raw, EXCLUDED.industry_raw),
-        logo_url     = COALESCE(gold.company.logo_url,     EXCLUDED.logo_url)
-  RETURNING company_id, website_domain, brand_key
-),
-ins_name AS (
-  -- Case B: name-only (no org_root) -> insert by name_norm (conflict-safe)
-  INSERT INTO gold.company (name, description, size_raw, industry_raw, logo_url)
-  SELECT
-    ti.company_name,
-    ti.company_description_raw,
-    ti.company_size_raw,
-    ti.company_industry_raw,
-    ti.company_logo_url
-  FROM to_insert ti
-  WHERE ti.org_root IS NULL
-  ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO NOTHING
+        -- Only promote domain/brand when they are missing on the existing row,
+        -- or when they agree with the same org root.
+        website_domain = COALESCE(gold.company.website_domain, EXCLUDED.website_domain),
+        brand_key      = COALESCE(gold.company.brand_key,      EXCLUDED.brand_key),
+        description    = COALESCE(gold.company.description,    EXCLUDED.description),
+        size_raw       = COALESCE(gold.company.size_raw,       EXCLUDED.size_raw),
+        industry_raw   = COALESCE(gold.company.industry_raw,   EXCLUDED.industry_raw),
+        logo_url       = COALESCE(gold.company.logo_url,       EXCLUDED.logo_url)
   RETURNING company_id
 ),
 resolved AS (
@@ -121,16 +112,7 @@ resolved AS (
     d.source, d.source_id, d.source_row_url,
     d.company_name, d.name_norm,
     d.org_root, d.brand_key,
-    COALESCE(
-      (SELECT company_id FROM gold.company gc
-        WHERE d.org_root IS NOT NULL
-          AND gc.website_domain = d.org_root
-          AND COALESCE(gc.brand_key,'') = COALESCE(d.brand_key,'')
-        LIMIT 1),
-      (SELECT company_id FROM gold.company gc
-        WHERE gc.name_norm = d.name_norm
-        LIMIT 1)
-    ) AS company_id,
+    (SELECT company_id FROM gold.company gc WHERE gc.name_norm = d.name_norm LIMIT 1) AS company_id,
     d.company_description_raw, d.company_size_raw, d.company_industry_raw, d.company_logo_url,
     d.apply_root_raw, d.email_root_raw
   FROM dedup_name d
