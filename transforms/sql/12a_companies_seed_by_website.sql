@@ -16,7 +16,6 @@ filtered AS (
     AND NOT util.is_ats_host(website_root)
 ),
 picked AS (
-  -- one candidate per name_norm (choose deterministically)
   SELECT DISTINCT ON (name_norm)
          company_name, name_norm, website_root
   FROM filtered
@@ -25,5 +24,4 @@ picked AS (
 INSERT INTO gold.company (name, website_domain)
 SELECT company_name, website_root
 FROM picked
-ON CONFLICT (name_norm) DO NOTHING
-ON CONFLICT ON CONSTRAINT company_website_domain_uidx DO NOTHING;
+ON CONFLICT DO NOTHING;
