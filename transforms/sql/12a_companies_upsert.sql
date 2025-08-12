@@ -1,9 +1,8 @@
 -- transforms/sql/12a_companies_upsert.sql
--- One-pass, collision-free company upsert:
+-- One-pass, collision-free company upsert (no JSON parsing).
 -- 1) Pick one best row per name_norm (prefer real site, then richness) -> insert name-only.
 -- 2) Pick one winner per (org_root, brand_key) -> set website_domain/brand on that one row only.
 -- 3) Resolve all rows to company_id; write aliases & evidence; top-up attrs (no regress).
--- NOTE: No JSON parsing here (avoids NaN/Infinity issues).
 
 BEGIN;
 
@@ -91,7 +90,7 @@ domain_winner AS (
 
 -- 1) Insert exactly one row per name_norm (names only; no domain yet)
 ins_names AS (
-  INSERT INTO gold.company (name, description, size_raw, industry_raw, logo_url, brand_key)
+  INSERT INTO gold.company AS gc (name, description, size_raw, industry_raw, logo_url, brand_key)
   SELECT
     n.company_name,
     n.company_description_raw,
@@ -101,13 +100,13 @@ ins_names AS (
     COALESCE(n.brand_key_norm, '')
   FROM best_per_name_brand n
   ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO UPDATE
-    SET name         = CASE WHEN util.is_placeholder_company_name(name) THEN EXCLUDED.name ELSE name END,
-        description  = COALESCE(description,  EXCLUDED.description),
-        size_raw     = COALESCE(size_raw,     EXCLUDED.size_raw),
-        industry_raw = COALESCE(industry_raw, EXCLUDED.industry_raw),
-        logo_url     = COALESCE(logo_url,     EXCLUDED.logo_url),
-        brand_key    = COALESCE(brand_key,    EXCLUDED.brand_key)
-  RETURNING company_id, name, name_norm
+    SET name         = CASE WHEN util.is_placeholder_company_name(gc.name) THEN EXCLUDED.name ELSE gc.name END,
+        description  = COALESCE(gc.description,  EXCLUDED.description),
+        size_raw     = COALESCE(gc.size_raw,     EXCLUDED.size_raw),
+        industry_raw = COALESCE(gc.industry_raw, EXCLUDED.industry_raw),
+        logo_url     = COALESCE(gc.logo_url,     EXCLUDED.logo_url),
+        brand_key    = COALESCE(gc.brand_key,    EXCLUDED.brand_key)
+  RETURNING gc.company_id, gc.name, gc.name_norm
 ),
 
 -- 2) Update website_domain/brand only for the single domain_winner rows (prevents domain collisions)
