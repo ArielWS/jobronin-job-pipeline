@@ -126,3 +126,14 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     ELSE FALSE
   END
 $$;
+
+-- util: career/careers/.jobs hosts should not be canonical identity
+CREATE OR REPLACE FUNCTION util.is_career_host(h text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+SELECT CASE
+  WHEN h IS NULL OR btrim(h)='' THEN FALSE
+  WHEN h ~ '\.jobs$'                         THEN TRUE
+  WHEN h ~ '(^|[.-])careers?([.-]|$)'        THEN TRUE
+  ELSE FALSE
+END
+$$;
