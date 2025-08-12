@@ -79,13 +79,11 @@ to_insert AS (
   WHERE (org_root IS NOT NULL) OR (is_fuzzy_dup = FALSE)
 ),
 ins AS (
-  -- 6) Insert by (website_domain, brand_key) when org_root known; else by name_norm
-  -- Case A: org_root known -> insert with domain
-  INSERT INTO gold.company (name, name_norm, website_domain, brand_key,
+  -- 6) Case A: org_root known -> insert with domain (do NOT write to generated name_norm)
+  INSERT INTO gold.company (name, website_domain, brand_key,
                             description, size_raw, industry_raw, logo_url)
   SELECT
     ti.company_name,
-    ti.name_norm,
     ti.org_root,
     ti.brand_key,
     ti.company_description_raw,
@@ -107,11 +105,9 @@ ins AS (
 ),
 ins_name AS (
   -- Case B: name-only (no org_root) -> insert by name_norm (conflict-safe)
-  INSERT INTO gold.company (name, name_norm,
-                            description, size_raw, industry_raw, logo_url)
+  INSERT INTO gold.company (name, description, size_raw, industry_raw, logo_url)
   SELECT
     ti.company_name,
-    ti.name_norm,
     ti.company_description_raw,
     ti.company_size_raw,
     ti.company_industry_raw,
@@ -166,7 +162,7 @@ resolved AS (
                        THEN r.apply_root_raw END)
   ) AS kv(kind, val)
   WHERE r.company_id IS NOT NULL AND kv.val IS NOT NULL
-  ON CONFLICT (kind, value) DO NOTHING
+  ON CONFLICT (company_id, kind, value) DO NOTHING
   RETURNING 1
 )
 -- 9) Promote website_domain for name-only companies if we now have evidence
