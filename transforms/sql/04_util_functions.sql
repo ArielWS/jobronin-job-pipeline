@@ -90,12 +90,12 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
          SELECT regexp_replace(
            s,
            '\b(gmbh|ag|se|kgaa|kg|ug|bv|b\.v\.|sarl|sas|ltd|plc|llc|inc|oy|ab|as|s\.r\.o\.|sp\. z o\.o\.)\b',
-           ' ','g'
-         ) s FROM cleaned
+           ' ','g') s
+         FROM cleaned
        ),
        strip_noise AS (
-         SELECT regexp_replace(s, '\b(group|holding|english|deutschland|germany)\b', ' ', 'g')
-         s FROM strip_legal
+         SELECT regexp_replace(s, '\b(group|holding|english|deutschland|germany)\b', ' ', 'g') s
+         FROM strip_legal
        ),
        squashed AS (SELECT regexp_replace(s,'\s+',' ','g') s FROM strip_noise)
   SELECT NULLIF(trim(s),'') FROM squashed;
