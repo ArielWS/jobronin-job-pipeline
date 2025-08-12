@@ -116,3 +116,13 @@ SELECT CASE
   ELSE FALSE
 END
 $$;
+
+-- prevent appending  "Not Found" like names
+CREATE OR REPLACE FUNCTION util.is_placeholder_company_name(n text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE
+    WHEN n IS NULL THEN TRUE
+    WHEN btrim(lower(n)) IN ('not found','unknown','n/a','na','-','n.a.','none') THEN TRUE
+    ELSE FALSE
+  END
+$$;
