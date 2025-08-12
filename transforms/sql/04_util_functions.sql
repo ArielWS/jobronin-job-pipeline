@@ -158,3 +158,21 @@ CREATE OR REPLACE FUNCTION util.company_name_norm_langless(n text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
 SELECT util.company_name_norm(util.company_name_strip_lang_suffix(n))
 $$;
+
+
+-- Safe JSONB cast: replace NaN/Infinity/None with null, return NULL on failure
+CREATE OR REPLACE FUNCTION util.jsonb_safe(t text)
+RETURNS jsonb LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE s text;
+BEGIN
+  IF t IS NULL OR btrim(t) = '' THEN
+    RETURN NULL;
+  END IF;
+  s := regexp_replace(t, '\bNaN\b', 'null', 'gi');
+  s := regexp_replace(s, '\bInfinity\b', 'null', 'gi');
+  s := regexp_replace(s, '\b-?Infinity\b', 'null', 'gi');
+  s := regexp_replace(s, '\bNone\b', 'null', 'gi');
+  RETURN s::jsonb;
+EXCEPTION WHEN others THEN
+  RETURN NULL;
+END$$;
