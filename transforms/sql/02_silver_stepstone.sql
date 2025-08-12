@@ -1,6 +1,6 @@
 -- transforms/sql/02_silver_stepstone.sql
 -- Silver view for StepStone → normalized common shape
--- Raw table: public.stepstone_job_scrape
+-- Raw table (assumed): public.stepstone_job_scrape
 -- Known columns: id, client_name, clientID, search_term, location, job_data (JSON text blob), timestamp
 -- JSON is sanitized via util.json_clean(text) → jsonb (handles NaN/Infinity/None → null)
 
@@ -9,17 +9,17 @@ CREATE SCHEMA IF NOT EXISTS silver;
 CREATE OR REPLACE VIEW silver.stepstone AS
 WITH raw AS (
   SELECT
-    ss.id::text  AS source_id,
-    ss.client_name,
-    ss.location   AS location_raw,
-    ss.job_data   AS job_data_txt,
-    ss.timestamp  AS ts_raw
+    ss.id::text        AS source_id,
+    ss.client_name     AS client_name,
+    ss.location        AS location_raw,
+    ss.job_data        AS job_data_txt,
+    ss.timestamp       AS ts_raw
   FROM public.stepstone_job_scrape ss
 ),
 parsed AS (
   SELECT
     r.*,
-    util.json_clean(r.job_data_txt) AS jd  -- sanitize once here
+    util.json_clean(r.job_data_txt) AS jd
   FROM raw r
 ),
 fields AS (
@@ -29,15 +29,13 @@ fields AS (
     p.ts_raw,
     p.jd,
 
-    /* Company & title from multiple likely keys (NO fallback to client_name) */
-    NULLIF(
-      btrim(COALESCE(
-        p.jd #>> '{employer,name}',
-        p.jd #>> '{company,name}',
-        p.jd ->> 'companyName'
-      )),
-      ''
-    ) AS company_name_raw,
+    /* Company & title from multiple likely keys (string or object) */
+    btrim(NULLIF(COALESCE(
+      p.jd #>> '{employer,name}',
+      p.jd #>> '{company,name}',
+      p.jd ->> 'companyName',
+      p.jd ->> 'company'         -- plain string form
+    ), '')) AS company_name_json,
 
     btrim(COALESCE(
       p.jd #>> '{job,title}',
@@ -45,8 +43,10 @@ fields AS (
       p.jd ->> 'title'
     )) AS title_raw,
 
-    /* URLs */
+    /* URLs: support snake_case and camelCase */
     NULLIF(COALESCE(
+      p.jd ->> 'job_url_direct',
+      p.jd ->> 'job_url',
       p.jd ->> 'applyUrl',
       p.jd ->> 'applicationUrl',
       p.jd ->> 'jobUrl',
@@ -56,9 +56,11 @@ fields AS (
     NULLIF(COALESCE(
       p.jd #>> '{company,website}',
       p.jd #>> '{company,homepage}',
-      p.jd #>> '{employer,website}',
+      p.jd ->> 'company_website',
+      p.jd ->> 'company_homepage',
       p.jd ->> 'companyWebsite',
-      p.jd ->> 'homepage'
+      p.jd ->> 'homepage',
+      p.jd #>> '{employer,website}'
     ), '') AS company_website_raw,
 
     /* Try to find *any* email in the JSON blob for contact root */
@@ -67,22 +69,39 @@ fields AS (
 ),
 norm AS (
   SELECT
-    'stepstone'                  AS source,
+    'stepstone'  AS source,
     f.source_id,
-    /* StepStone row URL (best-effort) */
-    f.job_url_direct             AS source_row_url,
-    f.job_url_direct             AS job_url_direct,
+    /* If StepStone doesn't give a stable row URL, use the apply/job URL */
+    f.job_url_direct AS source_row_url,
+    f.job_url_direct AS job_url_direct,
 
-    /* Title */
     f.title_raw,
     CASE WHEN f.title_raw IS NULL THEN NULL ELSE lower(btrim(f.title_raw)) END AS title_norm,
 
-    /* Company: keep original in company_raw; NULL placeholders for company_name */
-    f.company_name_raw           AS company_raw,
+    /* Company: prefer JSON; otherwise, carefully guess from title suffix */
+    f.company_name_json AS company_raw,
     CASE
-      WHEN util.is_placeholder_company_name(f.company_name_raw) THEN NULL
-      ELSE f.company_name_raw
-    END                          AS company_name,
+      WHEN f.company_name_json IS NOT NULL
+           AND NOT util.is_placeholder_company_name(f.company_name_json)
+           AND util.company_name_norm(f.company_name_json) IS NOT NULL
+        THEN f.company_name_json
+      ELSE
+        /* guess from title suffix: "… - WalkMe" or "… | WalkMe" or "… @ WalkMe" */
+        NULLIF(
+          btrim(
+            regexp_replace(
+              coalesce(
+                (regexp_match(coalesce(f.title_raw,''), '(?:\s[-–—|@]\s)([A-Za-z0-9&.\- ]{2,})$'))[1],
+                ''
+              ),
+              '\s*\((?:m\/w\/d|w\/m\/d|mwd|m\/f\/d|f\/m\/d)\)\s*',  -- strip job markers
+              '',
+              'gi'
+            )
+          ),
+          ''
+        )
+    END AS company_name,
 
     /* Location */
     f.location_raw,
@@ -99,19 +118,21 @@ norm AS (
 
     /* Pay (guard casts in case StepStone uses strings) */
     CASE WHEN (f.jd ->> 'salaryMin') ~ '^-?[0-9]+(\.[0-9]+)?$'
-         THEN (f.jd ->> 'salaryMin')::numeric ELSE NULL END AS salary_min,
+         THEN (f.jd ->> 'salaryMin')::numeric
+         ELSE NULL END AS salary_min,
     CASE WHEN (f.jd ->> 'salaryMax') ~ '^-?[0-9]+(\.[0-9]+)?$'
-         THEN (f.jd ->> 'salaryMax')::numeric ELSE NULL END AS salary_max,
+         THEN (f.jd ->> 'salaryMax')::numeric
+         ELSE NULL END AS salary_max,
     COALESCE(f.jd ->> 'salaryCurrency', f.jd #>> '{salary,currency}') AS currency,
 
     /* Emails → domains */
-    f.email_found                                    AS emails_raw,
-    util.email_domain(f.email_found)                 AS contact_email_domain,
+    f.email_found                                AS emails_raw,
+    util.email_domain(f.email_found)             AS contact_email_domain,
     util.org_domain(util.email_domain(f.email_found)) AS contact_email_root,
 
     /* Apply */
-    util.url_host(f.job_url_direct)                  AS apply_domain,
-    util.org_domain(util.url_host(f.job_url_direct)) AS apply_root,
+    util.url_host(f.job_url_direct)                   AS apply_domain,
+    util.org_domain(util.url_host(f.job_url_direct))  AS apply_root,
 
     /* Company site (filter aggregators/ATS for company_domain only) */
     CASE
@@ -123,28 +144,20 @@ norm AS (
       WHEN util.is_aggregator_host(util.url_host(f.company_website_raw)) THEN NULL
       WHEN util.is_ats_host(util.url_host(f.company_website_raw))        THEN NULL
       ELSE util.org_domain(util.url_host(f.company_website_raw))
-    END AS company_domain,
-
-    /* Common enrichment bits in StepStone payloads (best-effort) */
-    COALESCE(f.jd #>> '{company,size}',     f.jd ->> 'companySize')         AS company_size_raw,
-    COALESCE(f.jd #>> '{company,industry}', f.jd #>> '{industry,name}')     AS company_industry_raw,
-    COALESCE(f.jd #>> '{company,logoUrl}',  f.jd ->> 'companyLogoUrl')      AS company_logo_url,
-    COALESCE(f.jd ->> 'companyDescription', f.jd #>> '{company,description}') AS company_description_raw
+    END AS company_domain
   FROM fields f
 ),
 -- Stronger junk filter:
--- 1) Drop rows where title is a placeholder ('not found', etc.).
--- 2) Drop rows that have no company *and* no URL/email (there’s nothing to resolve).
+-- 1) Must have a non-placeholder title
+-- 2) Must have a usable company_name (after normalization) OR at least one link/email
 keep AS (
   SELECT *
-  FROM norm
+  FROM norm n
   WHERE
-    -- 1) must have a non-placeholder title
-    NOT util.is_placeholder_company_name(title_raw)
-    -- 2) also require at least one signal: publisher OR (apply url / company website / email)
+    NOT util.is_placeholder_company_name(n.title_raw)
     AND (
-      company_name IS NOT NULL
-      OR COALESCE(job_url_direct, company_website, emails_raw) IS NOT NULL
+      util.company_name_norm(n.company_name) IS NOT NULL
+      OR COALESCE(n.job_url_direct, n.company_website, n.emails_raw) IS NOT NULL
     )
 )
 SELECT
@@ -156,6 +169,5 @@ SELECT
   salary_min, salary_max, currency,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
-  company_website, company_domain,
-  company_size_raw, company_industry_raw, company_logo_url, company_description_raw
+  company_website, company_domain
 FROM keep;
