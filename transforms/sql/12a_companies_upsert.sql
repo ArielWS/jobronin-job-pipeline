@@ -56,7 +56,7 @@ brand AS (
   FROM canon c
 ),
 dedup_name AS (
-  -- 4) Fuzzy guard for name-only inserts (no org root): skip if similar to an existing name/alias
+  -- 4) Fuzzy guard for name-only inserts (no org root): mark rows too-similar to existing names/aliases
   SELECT
     b.*,
     CASE
@@ -72,32 +72,43 @@ dedup_name AS (
   FROM brand b
 ),
 to_insert AS (
-  -- 5) Candidates we will actually insert (domain path OR clean name-only)
+  -- 5) Keep only rows that are eligible to insert (domain path OR clean name-only)
   SELECT * FROM dedup_name
   WHERE (org_root IS NOT NULL) OR (is_fuzzy_dup = FALSE)
 ),
--- 6) NAME-FIRST upsert:
---    We upsert by name_norm so if a name-only row already exists (e.g., "SAP"),
---    we update that row to add website_domain/brand_key instead of colliding.
+winner AS (
+  -- 6) **DEDUP BY name_norm** to avoid "affect row a second time"
+  -- Prefer rows with org_root, then brand_key, then richer attrs
+  SELECT DISTINCT ON (name_norm)
+    ti.*
+  FROM to_insert ti
+  ORDER BY
+    ti.name_norm,
+    (ti.org_root IS NOT NULL) DESC,
+    (ti.brand_key IS NOT NULL) DESC,
+    ((ti.company_description_raw IS NOT NULL)::int
+     + (ti.company_size_raw IS NOT NULL)::int
+     + (ti.company_industry_raw IS NOT NULL)::int
+     + (ti.company_logo_url IS NOT NULL)::int) DESC
+),
 ins_namefirst AS (
+  -- 7) NAME-FIRST upsert so name-only rows get upgraded with domain/brand
   INSERT INTO gold.company (name, website_domain, brand_key,
                             description, size_raw, industry_raw, logo_url)
   SELECT
-    ti.company_name,
-    ti.org_root,           -- may be NULL
-    ti.brand_key,          -- may be NULL
-    ti.company_description_raw,
-    ti.company_size_raw,
-    ti.company_industry_raw,
-    ti.company_logo_url
-  FROM to_insert ti
+    w.company_name,
+    w.org_root,           -- may be NULL
+    w.brand_key,          -- may be NULL
+    w.company_description_raw,
+    w.company_size_raw,
+    w.company_industry_raw,
+    w.company_logo_url
+  FROM winner w
   ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO UPDATE
     SET name = CASE
                  WHEN util.is_placeholder_company_name(gold.company.name) THEN EXCLUDED.name
                  ELSE gold.company.name
                END,
-        -- Only promote domain/brand when they are missing on the existing row,
-        -- or when they agree with the same org root.
         website_domain = COALESCE(gold.company.website_domain, EXCLUDED.website_domain),
         brand_key      = COALESCE(gold.company.brand_key,      EXCLUDED.brand_key),
         description    = COALESCE(gold.company.description,    EXCLUDED.description),
@@ -107,7 +118,7 @@ ins_namefirst AS (
   RETURNING company_id
 ),
 resolved AS (
-  -- 7) Resolve the company_id for every src row (inserted or already existing)
+  -- 8) Resolve the company_id for ALL source rows (not just the winners) by name_norm
   SELECT
     d.source, d.source_id, d.source_row_url,
     d.company_name, d.name_norm,
@@ -117,7 +128,7 @@ resolved AS (
     d.apply_root_raw, d.email_root_raw
   FROM dedup_name d
 )
--- 8) Always add alias & evidence; promote attrs (no regress) and domain if we learn it later
+-- 9) Always add alias & evidence; promote attrs (no regress) and domain if we learn it later
 , add_alias AS (
   INSERT INTO gold.company_alias(company_id, alias)
   SELECT DISTINCT r.company_id, r.company_name
@@ -145,7 +156,7 @@ resolved AS (
   ON CONFLICT (company_id, kind, value) DO NOTHING
   RETURNING 1
 )
--- 9) Promote website_domain for name-only companies if we now have evidence
+-- 10) Promote website_domain for name-only companies if we now have evidence
 , promote_domain AS (
   UPDATE gold.company gc
   SET website_domain = sub.org_root
@@ -159,7 +170,7 @@ resolved AS (
     AND gc.website_domain IS NULL
   RETURNING 1
 )
--- 10) Top-up attributes (no regress)
+-- 11) Top-up attributes (no regress)
 UPDATE gold.company gc
 SET description  = COALESCE(gc.description,  r.company_description_raw),
     size_raw     = COALESCE(gc.size_raw,     r.company_size_raw),
