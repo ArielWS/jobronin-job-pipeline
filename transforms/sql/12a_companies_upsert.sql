@@ -1,32 +1,54 @@
 -- transforms/sql/12a_companies_upsert.sql
--- Minimal, JSON-proof company upsert:
--- - Only uses name + domain/email/apply for identity/evidence.
--- - No description/size/industry/logo reads here (avoids NaN/Infinity JSON).
--- - Brand-aware domain claim; alias & evidence written; no regress updates.
+-- Minimal, JSON-proof company upsert pulling directly from raw tables:
+--  - JobSpy: name + site/email/apply derived from plain URL/email fields
+--  - StepStone: name-only (no job_data parsing)
+--  - Brand-aware domain claim; alias & evidence; no-regress; no JSON access anywhere
 
 BEGIN;
 
-WITH src AS (
+WITH src_jobspy AS (
   SELECT DISTINCT
-    s.source,
-    s.source_id,
-    s.source_row_url,
-    s.company_name,
-    util.company_name_norm_langless(s.company_name) AS name_norm,
-    util.org_domain(NULLIF(s.company_domain,''))    AS site_root_raw,
-    CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL
-         ELSE s.contact_email_root
-    END                                             AS email_root_raw,
-    NULLIF(s.apply_root,'')                         AS apply_root_raw
-  FROM silver.unified s
-  WHERE s.company_name IS NOT NULL
-    AND btrim(s.company_name) <> ''
-    AND util.company_name_norm_langless(s.company_name) IS NOT NULL
-    AND util.is_placeholder_company_name(s.company_name) = FALSE
+    'jobspy'::text                                      AS source,
+    js.id::text                                         AS source_id,
+    COALESCE(js.job_url_direct, js.job_url)             AS source_row_url,
+    js.company                                          AS company_name,
+    util.company_name_norm_langless(js.company)         AS name_norm,
+    -- site root from company URL fields
+    util.org_domain(util.url_host(COALESCE(js.company_url, js.company_url_direct))) AS site_root_raw,
+    -- email root from first email in the raw string
+    CASE
+      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(js.emails))) THEN NULL
+      ELSE util.email_domain(util.first_email(js.emails))
+    END                                                 AS email_root_raw,
+    -- apply root from job_url(_direct) host (aggregator/ATS later filtered)
+    util.org_domain(util.url_host(COALESCE(js.job_url_direct, js.job_url)))          AS apply_root_raw
+  FROM public.jobspy_job_scrape js
+  WHERE js.company IS NOT NULL
+    AND btrim(js.company) <> ''
+    AND util.company_name_norm_langless(js.company) IS NOT NULL
 ),
-
+src_stepstone AS (
+  SELECT DISTINCT
+    'stepstone'::text                      AS source,
+    st.id::text                            AS source_id,
+    NULL::text                             AS source_row_url,
+    st.client_name                         AS company_name,
+    util.company_name_norm_langless(st.client_name) AS name_norm,
+    NULL::text                             AS site_root_raw,
+    NULL::text                             AS email_root_raw,
+    NULL::text                             AS apply_root_raw
+  FROM public.stepstone_job_scrape st
+  WHERE st.client_name IS NOT NULL
+    AND btrim(st.client_name) <> ''
+    AND util.company_name_norm_langless(st.client_name) IS NOT NULL
+),
+src AS (
+  SELECT * FROM src_jobspy
+  UNION ALL
+  SELECT * FROM src_stepstone
+),
 best_per_name AS (
-  -- ONE candidate per normalized name; prefer a real site host over email
+  -- choose ONE best candidate per normalized name; prefer real site host over email
   SELECT DISTINCT ON (name_norm)
     s.*,
     CASE
@@ -35,11 +57,11 @@ best_per_name AS (
            AND NOT util.is_ats_host(s.site_root_raw)
            AND NOT util.is_career_host(s.site_root_raw)
       THEN s.site_root_raw
-      WHEN s.email_root_raw IS NOT NULL
-      THEN s.email_root_raw
+      WHEN s.email_root_raw IS NOT NULL THEN s.email_root_raw
       ELSE NULL
     END AS org_root
   FROM src s
+  WHERE util.is_placeholder_company_name(s.company_name) = FALSE
   ORDER BY
     s.name_norm,
     (s.site_root_raw IS NOT NULL
@@ -47,7 +69,6 @@ best_per_name AS (
      AND NOT util.is_ats_host(s.site_root_raw)
      AND NOT util.is_career_host(s.site_root_raw)) DESC
 ),
-
 best_per_name_brand AS (
   SELECT
     b.*,
@@ -61,7 +82,6 @@ best_per_name_brand AS (
     ), ''::text) AS brand_key_norm
   FROM best_per_name b
 ),
-
 domain_winner AS (
   -- ONE row per (org_root, brand_key) is allowed to set website_domain
   SELECT DISTINCT ON (org_root, brand_key_norm)
@@ -71,7 +91,7 @@ domain_winner AS (
   ORDER BY d.org_root, d.brand_key_norm
 ),
 
--- 1) Insert exactly one row per name_norm (names only; no attrs)
+-- 1) Insert one row per name_norm (names only; no attrs to avoid JSON entirely)
 ins_names AS (
   INSERT INTO gold.company AS gc (name, brand_key)
   SELECT n.company_name, COALESCE(n.brand_key_norm,'')
@@ -82,7 +102,7 @@ ins_names AS (
   RETURNING gc.company_id, gc.name, gc.name_norm
 ),
 
--- 2) Set website_domain/brand for the winners only
+-- 2) Set website_domain/brand for the winners only (prevents domain collisions)
 upd_domain AS (
   UPDATE gold.company gc
   SET website_domain = COALESCE(gc.website_domain, dw.org_root),
@@ -166,7 +186,6 @@ add_evidence AS (
   RETURNING 1
 )
 
--- no attribute top-up here (that’s handled by a separate enrichment step once JSON is sanitized)
 SELECT 1;
 
 COMMIT;
