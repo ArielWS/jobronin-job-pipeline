@@ -105,3 +105,6 @@ BEGIN
 END$$;
 
 COMMIT;
+
+CREATE INDEX IF NOT EXISTS company_name_norm_langless_idx
+  ON gold.company (util.company_name_norm_langless(name));
