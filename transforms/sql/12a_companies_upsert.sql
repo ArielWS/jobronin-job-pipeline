@@ -1,8 +1,8 @@
 -- transforms/sql/12a_companies_upsert.sql
--- One-pass, collision-free company upsert (no JSON parsing).
--- 1) Pick one best row per name_norm (prefer real site, then richness) -> insert name-only.
--- 2) Pick one winner per (org_root, brand_key) -> set website_domain/brand on that one row only.
--- 3) Resolve all rows to company_id; write aliases & evidence; top-up attrs (no regress).
+-- Minimal, JSON-proof company upsert:
+-- - Only uses name + domain/email/apply for identity/evidence.
+-- - No description/size/industry/logo reads here (avoids NaN/Infinity JSON).
+-- - Brand-aware domain claim; alias & evidence written; no regress updates.
 
 BEGIN;
 
@@ -13,26 +13,20 @@ WITH src AS (
     s.source_row_url,
     s.company_name,
     util.company_name_norm_langless(s.company_name) AS name_norm,
-    -- raw candidates (site/email/apply)
-    util.org_domain(NULLIF(s.company_domain,'')) AS site_root_raw,
-    CASE
-      WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL
-      ELSE s.contact_email_root
-    END AS email_root_raw,
-    NULLIF(s.apply_root,'') AS apply_root_raw,
-    -- fillable attrs
-    s.company_description_raw,
-    s.company_size_raw,
-    s.company_industry_raw,
-    s.company_logo_url
+    util.org_domain(NULLIF(s.company_domain,''))    AS site_root_raw,
+    CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL
+         ELSE s.contact_email_root
+    END                                             AS email_root_raw,
+    NULLIF(s.apply_root,'')                         AS apply_root_raw
   FROM silver.unified s
   WHERE s.company_name IS NOT NULL
     AND btrim(s.company_name) <> ''
     AND util.company_name_norm_langless(s.company_name) IS NOT NULL
+    AND util.is_placeholder_company_name(s.company_name) = FALSE
 ),
 
 best_per_name AS (
-  -- choose ONE best candidate per normalized name (prefer valid site root over email, then richness)
+  -- ONE candidate per normalized name; prefer a real site host over email
   SELECT DISTINCT ON (name_norm)
     s.*,
     CASE
@@ -44,26 +38,17 @@ best_per_name AS (
       WHEN s.email_root_raw IS NOT NULL
       THEN s.email_root_raw
       ELSE NULL
-    END AS org_root,
-    ((s.company_description_raw IS NOT NULL)::int
-     + (s.company_size_raw IS NOT NULL)::int
-     + (s.company_industry_raw IS NOT NULL)::int
-     + (s.company_logo_url IS NOT NULL)::int) AS richness
+    END AS org_root
   FROM src s
   ORDER BY
     s.name_norm,
     (s.site_root_raw IS NOT NULL
      AND NOT util.is_aggregator_host(s.site_root_raw)
      AND NOT util.is_ats_host(s.site_root_raw)
-     AND NOT util.is_career_host(s.site_root_raw)) DESC,
-    ((s.company_description_raw IS NOT NULL)::int
-     + (s.company_size_raw IS NOT NULL)::int
-     + (s.company_industry_raw IS NOT NULL)::int
-     + (s.company_logo_url IS NOT NULL)::int) DESC
+     AND NOT util.is_career_host(s.site_root_raw)) DESC
 ),
 
 best_per_name_brand AS (
-  -- infer brand_key (coalesce to '' so uniqueness works even when there's no sub-brand)
   SELECT
     b.*,
     COALESCE((
@@ -78,38 +63,26 @@ best_per_name_brand AS (
 ),
 
 domain_winner AS (
-  -- choose ONE row per (org_root, brand_key) that will actually get website_domain set
+  -- ONE row per (org_root, brand_key) is allowed to set website_domain
   SELECT DISTINCT ON (org_root, brand_key_norm)
     d.*
   FROM best_per_name_brand d
   WHERE d.org_root IS NOT NULL
-  ORDER BY
-    d.org_root, d.brand_key_norm,
-    d.richness DESC
+  ORDER BY d.org_root, d.brand_key_norm
 ),
 
--- 1) Insert exactly one row per name_norm (names only; no domain yet)
+-- 1) Insert exactly one row per name_norm (names only; no attrs)
 ins_names AS (
-  INSERT INTO gold.company AS gc (name, description, size_raw, industry_raw, logo_url, brand_key)
-  SELECT
-    n.company_name,
-    n.company_description_raw,
-    n.company_size_raw,
-    n.company_industry_raw,
-    n.company_logo_url,
-    COALESCE(n.brand_key_norm, '')
+  INSERT INTO gold.company AS gc (name, brand_key)
+  SELECT n.company_name, COALESCE(n.brand_key_norm,'')
   FROM best_per_name_brand n
   ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO UPDATE
-    SET name         = CASE WHEN util.is_placeholder_company_name(gc.name) THEN EXCLUDED.name ELSE gc.name END,
-        description  = COALESCE(gc.description,  EXCLUDED.description),
-        size_raw     = COALESCE(gc.size_raw,     EXCLUDED.size_raw),
-        industry_raw = COALESCE(gc.industry_raw, EXCLUDED.industry_raw),
-        logo_url     = COALESCE(gc.logo_url,     EXCLUDED.logo_url),
-        brand_key    = COALESCE(gc.brand_key,    EXCLUDED.brand_key)
+    SET name      = CASE WHEN util.is_placeholder_company_name(gc.name) THEN EXCLUDED.name ELSE gc.name END,
+        brand_key = COALESCE(gc.brand_key, EXCLUDED.brand_key)
   RETURNING gc.company_id, gc.name, gc.name_norm
 ),
 
--- 2) Update website_domain/brand only for the single domain_winner rows (prevents domain collisions)
+-- 2) Set website_domain/brand for the winners only
 upd_domain AS (
   UPDATE gold.company gc
   SET website_domain = COALESCE(gc.website_domain, dw.org_root),
@@ -120,7 +93,7 @@ upd_domain AS (
   RETURNING 1
 ),
 
--- 3) Resolve each source row to company_id and carry its best org_root_candidate for evidence
+-- 3) Resolve every source row to company_id (prefer domain_winner match)
 resolved AS (
   SELECT
     s.source,
@@ -128,10 +101,6 @@ resolved AS (
     s.source_row_url,
     s.company_name,
     s.name_norm,
-    s.company_description_raw,
-    s.company_size_raw,
-    s.company_industry_raw,
-    s.company_logo_url,
     s.apply_root_raw,
     s.email_root_raw,
     CASE
@@ -145,7 +114,6 @@ resolved AS (
       ELSE NULL
     END AS org_root_candidate,
     COALESCE(
-      -- map by chosen domain winner first
       (SELECT gc.company_id
          FROM domain_winner dw
          JOIN gold.company gc ON gc.name_norm = dw.name_norm
@@ -161,16 +129,12 @@ resolved AS (
                               ELSE NULL
                             END
         LIMIT 1),
-      -- else by own name_norm
-      (SELECT gc2.company_id
-         FROM gold.company gc2
-        WHERE gc2.name_norm = s.name_norm
-        LIMIT 1)
+      (SELECT gc2.company_id FROM gold.company gc2 WHERE gc2.name_norm = s.name_norm LIMIT 1)
     ) AS company_id
   FROM src s
 ),
 
--- Aliases for every observed name -> resolved company
+-- Aliases: every observed name to its company
 add_alias AS (
   INSERT INTO gold.company_alias (company_id, alias)
   SELECT DISTINCT r.company_id, r.company_name
@@ -180,7 +144,7 @@ add_alias AS (
   RETURNING 1
 ),
 
--- Evidence (per-company primary key: (company_id, kind, value))
+-- Evidence: per-company PK (company_id, kind, value)
 add_evidence AS (
   INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
   SELECT DISTINCT r.company_id, kv.kind, kv.val, r.source, r.source_id
@@ -202,13 +166,7 @@ add_evidence AS (
   RETURNING 1
 )
 
--- Final non-regressive attribute top-up from the best_per_name winners only
-UPDATE gold.company gc
-SET description  = COALESCE(gc.description,  bp.company_description_raw),
-    size_raw     = COALESCE(gc.size_raw,     bp.company_size_raw),
-    industry_raw = COALESCE(gc.industry_raw, bp.company_industry_raw),
-    logo_url     = COALESCE(gc.logo_url,     bp.company_logo_url)
-FROM best_per_name bp
-WHERE gc.name_norm = bp.name_norm;
+-- no attribute top-up here (that’s handled by a separate enrichment step once JSON is sanitized)
+SELECT 1;
 
 COMMIT;
