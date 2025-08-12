@@ -176,3 +176,25 @@ BEGIN
 EXCEPTION WHEN others THEN
   RETURN NULL;
 END$$;
+
+-- Safe JSON cleaner: replace bare NaN/Infinity/None with null, then casT
+CREATE OR REPLACE FUNCTION util.json_clean(t text)
+RETURNS jsonb
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  s text := t;
+BEGIN
+  IF s IS NULL OR btrim(s) = '' THEN
+    RETURN NULL;
+  END IF;
+
+  -- Use PG word boundaries: [[:<:]] and [[:>:]]
+  s := regexp_replace(s, '[[:<:]]NaN[[:>:]]',      'null', 'g');
+  s := regexp_replace(s, '[[:<:]]Infinity[[:>:]]', 'null', 'g');
+  s := regexp_replace(s, '[[:<:]]None[[:>:]]',     'null', 'g');
+
+  RETURN s::jsonb;
+END
+$$;
