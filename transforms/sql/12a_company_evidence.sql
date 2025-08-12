@@ -2,7 +2,7 @@ WITH m AS (
   SELECT
     s.source, s.source_id,
     COALESCE(gc.company_id, gc2.company_id, gc3.company_id) AS company_id,
-    NULLIF(s.company_domain,'') AS website_root,
+    util.org_domain(NULLIF(s.company_domain,'')) AS website_root,
     CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL ELSE s.contact_email_root END AS email_root,
     NULLIF(s.apply_root,'') AS apply_root
   FROM silver.unified s
@@ -26,6 +26,8 @@ ev AS (
   UNION ALL
   SELECT company_id, 'apply', apply_root, source, source_id
   FROM m WHERE apply_root IS NOT NULL
+    AND NOT util.is_aggregator_host(apply_root)
+    AND NOT util.is_ats_host(apply_root)
 )
 INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
 SELECT DISTINCT company_id, kind, value, source, source_id
