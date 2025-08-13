@@ -23,3 +23,4 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12c_company_brand_rules.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_upsert.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_company_evidence.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12e_company_promote_domain.sql
