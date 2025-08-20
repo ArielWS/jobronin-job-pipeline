@@ -20,7 +20,7 @@ fields AS (
     COALESCE(jd->>'company', jd->>'company_name') AS company_raw,
     COALESCE(jd->>'job_description', jd->>'description') AS description_raw,
     jd->>'location'                            AS location_raw,
-    COALESCE(jd->>'contract_type', jd->>'employment_type') AS contract_type_raw,
+    COALESCE(jd->>'contract_type', jd->>'employment_type', jd->>'job_type') AS contract_type_raw,
     CASE
       WHEN jd ? 'is_remote' THEN
         CASE lower(jd->>'is_remote')
@@ -30,17 +30,26 @@ fields AS (
           WHEN 'false' THEN FALSE
           WHEN '0'     THEN FALSE
           WHEN 'no'    THEN FALSE
-          WHEN 'hybrid' THEN NULL
+          WHEN 'hybrid' THEN FALSE
+          WHEN 'on site' THEN FALSE
+          WHEN 'onsite' THEN FALSE
           ELSE NULL
         END
-      WHEN jd ? 'remote_type' THEN lower(jd->>'remote_type') = 'fully remote'
+      WHEN jd ? 'remote_type' THEN
+        CASE lower(jd->>'remote_type')
+          WHEN 'fully remote' THEN TRUE
+          WHEN 'hybrid' THEN FALSE
+          WHEN 'on site' THEN FALSE
+          WHEN 'onsite' THEN FALSE
+          ELSE NULL
+        END
       ELSE (jd->>'location') ILIKE '%remote%' OR (COALESCE(jd->>'title', jd->>'job_title')) ILIKE '%remote%'
     END                                       AS is_remote,
     -- Salary fields
-    CASE WHEN (jd->>'salary_min') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-         THEN (jd->>'salary_min')::numeric ELSE NULL END AS salary_min,
-    CASE WHEN (jd->>'salary_max') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-         THEN (jd->>'salary_max')::numeric ELSE NULL END AS salary_max,
+    CASE WHEN (COALESCE(jd->>'salary_min', jd->>'min_amount')) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+         THEN COALESCE(jd->>'salary_min', jd->>'min_amount')::numeric ELSE NULL END AS salary_min,
+    CASE WHEN (COALESCE(jd->>'salary_max', jd->>'max_amount')) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+         THEN COALESCE(jd->>'salary_max', jd->>'max_amount')::numeric ELSE NULL END AS salary_max,
     COALESCE(jd->>'salary_currency', jd->>'currency') AS currency,
     -- Emails
     util.first_email(jd::text)                AS emails_raw,
@@ -77,9 +86,9 @@ norm AS (
     NULLIF(split_part(f.location_raw, ', ', 2), '') AS region_guess,
     NULL::text                                AS country_guess,
     COALESCE(
-      to_timestamp(f.date_posted_raw, 'YYYY-MM-DD'),
-      to_timestamp(f.date_posted_raw, 'DD.MM.YYYY'),
-      NULLIF(f.date_posted_raw, '')::timestamptz
+      to_timestamp(btrim(f.date_posted_raw), 'YYYY-MM-DD'),
+      to_timestamp(btrim(f.date_posted_raw), 'DD.MM.YYYY'),
+      NULLIF(btrim(f.date_posted_raw), '')::timestamptz
     )                                       AS date_posted,
     f.is_remote,
     f.contract_type_raw,
