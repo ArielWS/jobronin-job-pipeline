@@ -21,11 +21,11 @@ WITH linkedin_sources AS (
   WHERE ss.company_website ILIKE '%linkedin.com/company/%'
 
   UNION ALL
-  -- Profesia.sk raw table
+  -- Profesia.sk silver view
   SELECT
     pk.company_name          AS company_name,
     pk.company_website       AS linkedin_url
-  FROM public.profesiask_job_scrape pk
+  FROM silver.profesia_sk pk
   WHERE pk.company_website ILIKE '%linkedin.com/company/%'
 ),
 slugs AS (
