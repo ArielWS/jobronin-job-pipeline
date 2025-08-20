@@ -66,6 +66,20 @@ BEGIN
   END IF;
 END$$;
 
+-- 3) One row per website_domain when brand_key IS NULL
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname='gold' AND indexname='company_domain_nobrands_uniq_idx'
+  ) THEN
+    EXECUTE 'CREATE UNIQUE INDEX company_domain_nobrands_uniq_idx
+             ON gold.company(website_domain)
+             WHERE brand_key IS NULL';
+  END IF;
+END$$;
+
+
 -- Aliases
 CREATE TABLE IF NOT EXISTS gold.company_alias (
   company_id BIGINT NOT NULL REFERENCES gold.company(company_id) ON DELETE CASCADE,
