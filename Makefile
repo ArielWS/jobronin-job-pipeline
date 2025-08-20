@@ -20,6 +20,7 @@ PIPELINE_SQL = \
   transforms/sql/12c_company_brand_rules.sql \
   transforms/sql/12a_companies_upsert.sql \
   transforms/sql/12a_company_evidence.sql \
+  transforms/sql/12b_company_fill_nulls.sql \
   transforms/sql/12f_company_linkedin.sql
 
 pipeline:
