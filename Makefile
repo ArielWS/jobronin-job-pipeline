@@ -18,8 +18,6 @@ PIPELINE_SQL = \
   transforms/sql/03_unified_stage.sql \
   transforms/sql/10_gold_company.sql \
   transforms/sql/12c_company_brand_rules.sql \
-  transforms/sql/12a_companies_seed_by_email.sql \
-  transforms/sql/12a_companies_seed_by_website.sql \
   transforms/sql/12a_companies_upsert.sql \
   transforms/sql/12a_company_evidence.sql \
   transforms/sql/12f_company_linkedin.sql
@@ -45,14 +43,12 @@ sql-companies:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/03_unified_stage.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/10_gold_company.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12c_company_brand_rules.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_seed_by_email.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_seed_by_website.sql
-        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_upsert.sql
-        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_company_evidence.sql
-        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12e_company_promote_domain.sql
-        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12f_company_linkedin.sql
-        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12b_company_fill_nulls.sql
-        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12d_company_monitoring_checks.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_upsert.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_company_evidence.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12e_company_promote_domain.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12f_company_linkedin.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12b_company_fill_nulls.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12d_company_monitoring_checks.sql
 
 sanity:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
