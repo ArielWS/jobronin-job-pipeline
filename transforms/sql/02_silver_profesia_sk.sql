@@ -88,6 +88,8 @@ norm AS (
     COALESCE(
       to_timestamp(btrim(f.date_posted_raw), 'YYYY-MM-DD'),
       to_timestamp(btrim(f.date_posted_raw), 'DD.MM.YYYY'),
+      -- Support single-digit day/month like "13.8.2025"
+      to_timestamp(btrim(f.date_posted_raw), 'FMDD.FMMM.YYYY'),
       NULLIF(btrim(f.date_posted_raw), '')::timestamptz
     )                                       AS date_posted,
     f.is_remote,
