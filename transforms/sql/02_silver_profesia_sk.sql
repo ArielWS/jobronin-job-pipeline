@@ -18,7 +18,10 @@ fields AS (
     jd->>'job_url'                             AS job_url_direct,
     COALESCE(jd->>'title', jd->>'job_title')   AS title_raw,
     COALESCE(jd->>'company', jd->>'company_name') AS company_raw,
-    COALESCE(jd->>'job_description', jd->>'description') AS description_raw,
+    COALESCE(
+      NULLIF(jd->>'job_description', ''),
+      NULLIF(jd->>'description', '')
+    ) AS description_raw,
     jd->>'location'                            AS location_raw,
     COALESCE(jd->>'contract_type', jd->>'employment_type', jd->>'job_type') AS contract_type_raw,
     CASE
