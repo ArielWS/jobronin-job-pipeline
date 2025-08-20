@@ -1,21 +1,37 @@
 BEGIN;
 
-WITH c AS (SELECT company_id, website_domain FROM gold.company),
+WITH c AS (
+  SELECT company_id, website_domain, name_norm
+  FROM gold.company
+),
 su AS (
   SELECT
     util.org_domain(NULLIF(company_domain,'')) AS org_root,
+    util.company_name_norm(company_name)       AS name_norm,
     company_description_raw, company_size_raw, company_industry_raw, company_logo_url,
     date_posted
   FROM silver.unified
 ),
-donor AS (
-  SELECT
-    c.company_id, s.*
+donor_domain AS (
+  SELECT c.company_id, s.*
   FROM c
   JOIN su s
     ON c.website_domain IS NOT NULL
    AND s.org_root IS NOT NULL
    AND util.same_org_domain(c.website_domain, s.org_root)
+),
+donor_name AS (
+  SELECT c.company_id, s.*
+  FROM c
+  JOIN su s
+    ON c.website_domain IS NULL
+   AND c.name_norm IS NOT NULL
+   AND s.name_norm = c.name_norm
+),
+donor AS (
+  SELECT * FROM donor_domain
+  UNION ALL
+  SELECT * FROM donor_name
 ),
 best AS (
   SELECT DISTINCT ON (company_id)
