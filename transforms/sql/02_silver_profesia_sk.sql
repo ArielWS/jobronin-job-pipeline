@@ -1,6 +1,6 @@
 -- transforms/sql/02_silver_profesia_sk.sql
 -- Silver view for Profesia SK → normalized common shape
--- Raw table: public.profesia_job_scrape
+-- Raw table: public.profesiask_job_scrape
 -- JSON sanitized via util.json_clean(text)
 
 CREATE SCHEMA IF NOT EXISTS silver;
@@ -9,7 +9,7 @@ CREATE OR REPLACE VIEW silver.profesia_sk AS
 WITH raw AS (
   SELECT
     util.json_clean(p.job_data) AS jd
-  FROM public.profesia_job_scrape p
+  FROM public.profesiask_job_scrape p
 ),
 fields AS (
   SELECT
