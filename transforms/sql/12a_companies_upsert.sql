@@ -184,13 +184,18 @@ add_evidence AS (
     AND kv.val IS NOT NULL
   ON CONFLICT (company_id, kind, value) DO NOTHING
   RETURNING 1
+),
+
+-- Force evaluation of ins_names CTE so the insert executes
+ins_names_ref AS (
+  SELECT 1 FROM ins_names LIMIT 1
 )
 
 -- ---------------  Post-insert: safely promote placeholder names ---------------
 -- Only change `name` when the normalized form would remain the same as current `name_norm`.
 UPDATE gold.company gc
 SET name = b.company_name
-FROM best_per_name_brand b
+FROM best_per_name_brand b, ins_names_ref
 WHERE util.is_placeholder_company_name(gc.name)
   AND gc.name_norm = b.name_norm
   AND util.company_name_norm_langless(b.company_name) = gc.name_norm;
