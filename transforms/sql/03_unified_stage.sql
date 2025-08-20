@@ -124,4 +124,4 @@ SELECT
   company_industry_raw,
   company_logo_url,
   company_description_raw
-FROM silver.profesiask;
+FROM silver.profesia;

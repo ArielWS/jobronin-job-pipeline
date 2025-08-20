@@ -13,6 +13,7 @@ worker:
 PIPELINE_SQL = \
   transforms/sql/04_util_functions.sql \
   transforms/sql/01_silver_jobspy.sql \
+  transforms/sql/02_silver_profesia.sql \
   transforms/sql/02_silver_stepstone.sql \
   transforms/sql/03_unified_stage.sql \
   transforms/sql/10_gold_company.sql \
@@ -34,11 +35,12 @@ nightly:
 
 sql-companies:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_extensions.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/01_silver_jobspy.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_stepstone.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/03_unified_stage.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/10_gold_company.sql
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/01_silver_jobspy.sql
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_profesia.sql
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_stepstone.sql
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/03_unified_stage.sql
+        psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/10_gold_company.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12c_company_brand_rules.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_upsert.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_company_evidence.sql

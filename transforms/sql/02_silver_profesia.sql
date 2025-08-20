@@ -1,15 +1,15 @@
--- transforms/sql/02_silver_profesiask.sql
--- Silver view for Profesia.sk → normalized common shape
--- Raw table: public.profesiask_job_scrape
+-- transforms/sql/02_silver_profesia.sql
+-- Silver view for Profesia → normalized common shape
+-- Raw table: public.profesia_job_scrape
 -- JSON sanitized via util.json_clean(text)
 
 CREATE SCHEMA IF NOT EXISTS silver;
 
-CREATE OR REPLACE VIEW silver.profesiask AS
+CREATE OR REPLACE VIEW silver.profesia AS
 WITH raw AS (
   SELECT
     util.json_clean(p.job_data) AS jd
-  FROM public.profesiask_job_scrape p
+  FROM public.profesia_job_scrape p
 ),
 fields AS (
   SELECT
@@ -21,7 +21,18 @@ fields AS (
     jd->>'location'                            AS location_raw,
     COALESCE(jd->>'contract_type', jd->>'employment_type') AS contract_type_raw,
     CASE
-      WHEN jd ? 'is_remote' THEN (jd->>'is_remote')::boolean
+      WHEN jd ? 'is_remote' THEN
+        CASE lower(jd->>'is_remote')
+          WHEN 'true'  THEN TRUE
+          WHEN '1'     THEN TRUE
+          WHEN 'yes'   THEN TRUE
+          WHEN 'false' THEN FALSE
+          WHEN '0'     THEN FALSE
+          WHEN 'no'    THEN FALSE
+          WHEN 'hybrid' THEN NULL
+          ELSE NULL
+        END
+      WHEN jd ? 'remote_type' THEN lower(jd->>'remote_type') = 'fully remote'
       ELSE (jd->>'location') ILIKE '%remote%' OR (COALESCE(jd->>'title', jd->>'job_title')) ILIKE '%remote%'
     END                                       AS is_remote,
     -- Salary fields
@@ -45,7 +56,7 @@ fields AS (
 ),
 norm AS (
   SELECT
-    'profesiask'                                AS source,
+    'profesia'                                AS source,
     f.source_id,
     f.job_url_direct                          AS source_row_url,
     f.job_url_direct,
@@ -63,7 +74,10 @@ norm AS (
     NULLIF(split_part(f.location_raw, ', ', 1), '') AS city_guess,
     NULLIF(split_part(f.location_raw, ', ', 2), '') AS region_guess,
     NULL::text                                AS country_guess,
-    CASE WHEN f.date_posted_raw IS NOT NULL THEN f.date_posted_raw::timestamptz ELSE NULL END AS date_posted,
+    CASE
+      WHEN f.date_posted_raw ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN f.date_posted_raw::timestamptz
+      ELSE NULL
+    END                                       AS date_posted,
     f.is_remote,
     f.contract_type_raw,
     f.salary_min,
