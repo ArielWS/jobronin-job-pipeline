@@ -88,13 +88,15 @@ norm AS (
     NULLIF(split_part(f.location_raw, ', ', 1), '') AS city_guess,
     NULLIF(split_part(f.location_raw, ', ', 2), '') AS region_guess,
     NULL::text                                AS country_guess,
-    COALESCE(
-      to_timestamp(btrim(f.date_posted_raw), 'YYYY-MM-DD'),
-      to_timestamp(btrim(f.date_posted_raw), 'DD.MM.YYYY'),
-      -- Support single-digit day/month like "13.8.2025"
-      to_timestamp(btrim(f.date_posted_raw), 'FMDD.FMMM.YYYY'),
-      NULLIF(btrim(f.date_posted_raw), '')::timestamptz
-    )                                       AS date_posted,
+    CASE
+      WHEN f.date_posted_raw ~ '^\d{4}-\d{2}-\d{2}$'
+        THEN to_timestamp(btrim(f.date_posted_raw), 'YYYY-MM-DD')
+      WHEN f.date_posted_raw ~ '^\d{2}\.\d{2}\.\d{4}$'
+        THEN to_timestamp(btrim(f.date_posted_raw), 'DD.MM.YYYY')
+      WHEN f.date_posted_raw ~ '^\d{1,2}\.\d{1,2}\.\d{4}$'
+        THEN to_timestamp(btrim(f.date_posted_raw), 'FMDD.FMMM.YYYY')
+      ELSE NULLIF(btrim(f.date_posted_raw), '')::timestamptz
+    END AS date_posted,
     f.is_remote,
     f.contract_type_raw,
     f.salary_min,
