@@ -18,6 +18,7 @@ fields AS (
     jd->>'job_url'                             AS job_url_direct,
     COALESCE(jd->>'title', jd->>'job_title')   AS title_raw,
     COALESCE(jd->>'company', jd->>'company_name') AS company_raw,
+    COALESCE(jd->>'job_description', jd->>'description') AS description_raw,
     jd->>'location'                            AS location_raw,
     COALESCE(jd->>'contract_type', jd->>'employment_type') AS contract_type_raw,
     CASE
@@ -70,6 +71,7 @@ norm AS (
         THEN f.company_raw
       ELSE NULL
     END                                       AS company_name,
+    f.description_raw,
     f.location_raw,
     NULLIF(split_part(f.location_raw, ', ', 1), '') AS city_guess,
     NULLIF(split_part(f.location_raw, ', ', 2), '') AS region_guess,
@@ -118,6 +120,7 @@ SELECT
   source, source_id, source_row_url, job_url_direct,
   title_raw, title_norm,
   company_raw, company_name,
+  description_raw,
   location_raw, city_guess, region_guess, country_guess,
   date_posted, is_remote, contract_type_raw,
   salary_min, salary_max, currency,
