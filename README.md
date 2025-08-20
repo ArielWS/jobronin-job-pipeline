@@ -35,6 +35,7 @@ Turns raw job posts from multiple sources into canonical, query-ready data with 
 │ ├── 12a_company_evidence.sql
 │ ├── 12b_company_fill_nulls.sql
 │ ├── 12c_company_brand_rules.sql
+│ ├── 12c_company_domain_from_evidence.sql
 │ ├── 12d_company_monitoring_checks.sql
 │ ├── 12e_company_promote_domain.sql # ← new domain promotion/upgrade
 │ └── 12f_company_claim_domains_reassign.sql (optional)
@@ -70,6 +71,7 @@ Lexical order = run order. For companies:
 12a_companies_upsert.sql — one-pass, collision-free upsert (name-first, domain later)
 12a_company_evidence.sql — write website / email / apply evidence
 12e_company_promote_domain.sql — upgrade website_domain from evidence (idempotent)
+12c_company_domain_from_evidence.sql — backfill website_domain from email/apply evidence
 12b_company_fill_nulls.sql — non-regressive fill for attrs
 12d_company_monitoring_checks.sql— duplicates / coverage checks
 
