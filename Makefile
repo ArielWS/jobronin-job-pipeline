@@ -21,7 +21,8 @@ PIPELINE_SQL = \
   transforms/sql/12a_companies_upsert.sql \
   transforms/sql/12a_company_evidence.sql \
   transforms/sql/12b_company_fill_nulls.sql \
-  transforms/sql/12f_company_linkedin.sql
+  transforms/sql/12f_company_linkedin.sql \
+  transforms/sql/12c_company_domain_from_evidence.sql
 
 pipeline:
 	@if [ -z "$(DATABASE_URL)" ]; then echo "DATABASE_URL not set"; exit 1; fi
