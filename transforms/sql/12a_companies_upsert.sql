@@ -94,7 +94,7 @@ ins_names AS (
   INSERT INTO gold.company AS gc (name, brand_key)
   SELECT b.company_name, b.brand_key_norm
   FROM best_per_name_brand b
-  ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO NOTHING
+  ON CONFLICT ON CONSTRAINT company_name_norm_uniq_idx DO NOTHING
   RETURNING gc.company_id, gc.name_norm
 ),
 
