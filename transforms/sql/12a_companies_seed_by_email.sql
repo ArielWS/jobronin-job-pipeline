@@ -16,10 +16,10 @@ picked AS (
   FROM filtered
   ORDER BY name_norm, email_root
 )
-INSERT INTO gold.company (name, website_domain)
-SELECT company_name, email_root
+INSERT INTO gold.company (name, website_domain, brand_key)
+SELECT company_name, email_root, '' AS brand_key
 FROM picked
-ON CONFLICT (website_domain) DO UPDATE
+ON CONFLICT ON CONSTRAINT company_domain_brand_uniq_idx DO UPDATE
 SET name = CASE
              WHEN util.is_placeholder_company_name(gold.company.name) THEN EXCLUDED.name
              ELSE gold.company.name
