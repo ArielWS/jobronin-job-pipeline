@@ -5,6 +5,7 @@ FILES = [
     "transforms/sql/04_util_functions.sql",
     "transforms/sql/01_silver_jobspy.sql",
     "transforms/sql/02_silver_stepstone.sql",
+    "transforms/sql/02_silver_profesia.sql",
     "transforms/sql/03_unified_stage.sql",
     "transforms/sql/10_gold_company.sql",
     "transforms/sql/12c_company_brand_rules.sql",
