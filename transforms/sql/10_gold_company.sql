@@ -36,16 +36,19 @@ FOR EACH ROW EXECUTE FUNCTION gold.touch_updated_at();
 DROP INDEX IF EXISTS company_name_norm_uidx;
 DROP INDEX IF EXISTS company_website_domain_uidx;
 DROP INDEX IF EXISTS company_name_norm_expr_uidx;
+DROP INDEX IF EXISTS company_name_norm_uniq_idx;
 
 -- Strong uniqueness we can upsert against:
 -- 1) One row per normalized name
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes
-    WHERE schemaname='gold' AND indexname='company_name_norm_uniq_idx'
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'company_name_norm_uniq'
+      AND conrelid = 'gold.company'::regclass
   ) THEN
-    EXECUTE 'CREATE UNIQUE INDEX company_name_norm_uniq_idx ON gold.company(name_norm)';
+    EXECUTE 'ALTER TABLE gold.company ADD CONSTRAINT company_name_norm_uniq UNIQUE (name_norm)';
   END IF;
 END$$;
 
