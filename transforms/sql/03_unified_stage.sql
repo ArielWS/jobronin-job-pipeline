@@ -15,6 +15,8 @@ SELECT
   company_raw,
   company_name,
 
+  NULL::text AS description_raw,
+
   location_raw,
   city_guess,
   region_guess,
@@ -55,6 +57,7 @@ SELECT
 
   company_raw,
   company_name,
+  NULL::text AS description_raw,
 
   location_raw,
   city_guess,
@@ -96,6 +99,7 @@ SELECT
 
   company_raw,
   company_name,
+  description_raw,
 
   location_raw,
   city_guess,
