@@ -76,10 +76,11 @@ norm AS (
     NULLIF(split_part(f.location_raw, ', ', 1), '') AS city_guess,
     NULLIF(split_part(f.location_raw, ', ', 2), '') AS region_guess,
     NULL::text                                AS country_guess,
-    CASE
-      WHEN f.date_posted_raw ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN f.date_posted_raw::timestamptz
-      ELSE NULL
-    END                                       AS date_posted,
+    COALESCE(
+      to_timestamp(f.date_posted_raw, 'YYYY-MM-DD'),
+      to_timestamp(f.date_posted_raw, 'DD.MM.YYYY'),
+      NULLIF(f.date_posted_raw, '')::timestamptz
+    )                                       AS date_posted,
     f.is_remote,
     f.contract_type_raw,
     f.salary_min,
