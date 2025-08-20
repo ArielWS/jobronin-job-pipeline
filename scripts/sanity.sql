@@ -44,3 +44,30 @@ BEGIN
   END IF;
 END
 $$;
+
+-- Domain enrichment check
+DO $$
+DECLARE
+  sampled INT;
+  missing INT;
+BEGIN
+  WITH sample AS (
+    SELECT gc.company_id, gc.website_domain
+    FROM gold.company gc
+    JOIN gold.company_evidence_domain ced ON ced.company_id = gc.company_id
+    ORDER BY random()
+    LIMIT 10
+  )
+  SELECT COUNT(*),
+         COUNT(*) FILTER (WHERE website_domain IS NULL)
+    INTO sampled, missing
+  FROM sample;
+
+  IF sampled = 0 THEN
+    RAISE EXCEPTION 'No companies with domain evidence found to sample';
+  END IF;
+  IF missing > 0 THEN
+    RAISE EXCEPTION 'Sampled companies missing website_domain despite domain evidence';
+  END IF;
+END
+$$;
