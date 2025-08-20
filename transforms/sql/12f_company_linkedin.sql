@@ -1,5 +1,5 @@
 -- transforms/sql/12f_company_linkedin.sql
--- Extract LinkedIn company slugs from raw source tables and update gold.company.linkedin_slug.
+-- Extract LinkedIn company slugs from source tables/views and update gold.company.linkedin_slug.
 -- Idempotent and safe to re-run.
 
 BEGIN;
@@ -13,12 +13,12 @@ WITH linkedin_sources AS (
   WHERE COALESCE(js.company_url_direct, js.company_url) ILIKE '%linkedin.com/company/%'
 
   UNION ALL
-  -- StepStone raw table
+  -- StepStone silver view
   SELECT
-    ss.company_name          AS company_name,
-    ss.company_website_raw   AS linkedin_url
-  FROM public.stepstone_job_scrape ss
-  WHERE ss.company_website_raw ILIKE '%linkedin.com/company/%'
+    ss.company_name        AS company_name,
+    ss.company_website     AS linkedin_url
+  FROM silver.stepstone ss
+  WHERE ss.company_website ILIKE '%linkedin.com/company/%'
 
   UNION ALL
   -- Profesia.sk raw table
