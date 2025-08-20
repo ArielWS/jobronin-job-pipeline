@@ -25,7 +25,7 @@ WITH linkedin_sources AS (
   SELECT
     pk.company_name          AS company_name,
     pk.company_website       AS linkedin_url
-  FROM public.profesia_sk_job_scrape pk
+  FROM public.profesiask_job_scrape pk
   WHERE pk.company_website ILIKE '%linkedin.com/company/%'
 ),
 slugs AS (
