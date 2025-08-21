@@ -43,6 +43,9 @@ fields AS (
       p.jd ->> 'title'
     )) AS title_raw,
     COALESCE(p.jd ->> 'description', p.jd #>> '{job,description}') AS description_raw,
+    p.jd ->> 'work_type'    AS work_type_raw,
+    p.jd ->> 'job_type'     AS job_type_raw,
+    p.jd ->> 'job_function' AS job_function_raw,
 
     -- URLs: support snake_case and camelCase
     NULLIF(COALESCE(
@@ -126,6 +129,9 @@ norm AS (
     -- Flags
     (f.location_raw ILIKE '%remote%' OR f.title_raw ILIKE '%remote%') AS is_remote,
     COALESCE(f.jd ->> 'contractType', f.jd #>> '{job,contractType}')  AS contract_type_raw,
+    f.work_type_raw,
+    f.job_type_raw,
+    f.job_function_raw,
 
     -- Pay (guard casts in case StepStone uses strings)
     CASE WHEN (f.jd ->> 'salaryMin') ~ '^-?[0-9]+(\.[0-9]+)?$'
@@ -186,6 +192,7 @@ SELECT
   company_raw, company_name,
   location_raw, city_guess, region_guess, country_guess,
   date_posted, is_remote, contract_type_raw,
+  work_type_raw, job_type_raw, job_function_raw,
   salary_min, salary_max, currency,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
