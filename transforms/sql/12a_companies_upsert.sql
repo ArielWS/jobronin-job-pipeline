@@ -3,66 +3,26 @@
 
 BEGIN;
 
--- ---------------  Source extraction (raw tables only) ---------------
-WITH src_jobspy AS (
+-- ---------------  Source extraction (from silver.unified) ---------------
+WITH src AS (
   SELECT DISTINCT
-    'jobspy'::text                                      AS source,
-    js.id::text                                         AS source_id,
-    COALESCE(js.job_url_direct, js.job_url)             AS source_row_url,
-    js.company                                          AS company_name,
-    util.company_name_norm_langless(js.company)         AS name_norm,
-    -- site root from company URL fields
-    util.org_domain(util.url_host(COALESCE(js.company_url, js.company_url_direct))) AS site_root_raw,
-    -- email root from first email in the raw string
+    s.source                                           AS source,
+    s.source_id::text                                  AS source_id,
+    s.source_row_url                                   AS source_row_url,
+    s.company_name                                     AS company_name,
+    util.company_name_norm_langless(s.company_name)    AS name_norm,
+    util.org_domain(s.company_domain)                  AS site_root_raw,
     CASE
-      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(js.emails))) THEN NULL
-      ELSE util.email_domain(util.first_email(js.emails))
-    END                                                 AS email_root_raw
-  FROM public.jobspy_job_scrape js
-  WHERE js.company IS NOT NULL
-    AND btrim(js.company) <> ''
-    AND util.company_name_norm_langless(js.company) IS NOT NULL
-    AND util.is_placeholder_company_name(js.company) = FALSE
-),
-src_stepstone AS (
-  -- Name-only; do not touch job_data at all
-  SELECT DISTINCT
-    'stepstone'::text                                   AS source,
-    st.id::text                                         AS source_id,
-    NULL::text                                          AS source_row_url,
-    st.client_name                                      AS company_name,
-    util.company_name_norm_langless(st.client_name)     AS name_norm,
-    NULL::text                                          AS site_root_raw,
-    NULL::text                                          AS email_root_raw
-  FROM public.stepstone_job_scrape st
-  WHERE st.client_name IS NOT NULL
-    AND btrim(st.client_name) <> ''
-    AND util.company_name_norm_langless(st.client_name) IS NOT NULL
-    AND util.is_placeholder_company_name(st.client_name) = FALSE
-),
-src_profesia AS (
-  -- Name-only; parse company from job_data JSON
-  SELECT DISTINCT
-    'profesia_sk'::text                                AS source,
-    md5(j.jd->>'job_url')                              AS source_id,
-    NULL::text                                         AS source_row_url,
-    COALESCE(j.jd->>'company', j.jd->>'company_name')      AS company_name,
-    util.company_name_norm_langless(COALESCE(j.jd->>'company', j.jd->>'company_name')) AS name_norm,
-    NULL::text                                         AS site_root_raw,
-    NULL::text                                         AS email_root_raw
-  FROM public.profesiask_job_scrape ps
-  CROSS JOIN LATERAL (SELECT util.json_clean(ps.job_data) AS jd) j
-  WHERE COALESCE(j.jd->>'company', j.jd->>'company_name') IS NOT NULL
-    AND btrim(COALESCE(j.jd->>'company', j.jd->>'company_name')) <> ''
-    AND util.company_name_norm_langless(COALESCE(j.jd->>'company', j.jd->>'company_name')) IS NOT NULL
-    AND util.is_placeholder_company_name(COALESCE(j.jd->>'company', j.jd->>'company_name')) = FALSE
-),
-src AS (
-  SELECT * FROM src_jobspy
-  UNION ALL
-  SELECT * FROM src_stepstone
-  UNION ALL
-  SELECT * FROM src_profesia
+      WHEN s.contact_email_root IS NOT NULL
+           AND NOT util.is_generic_email_domain(s.contact_email_root)
+      THEN s.contact_email_root
+      ELSE NULL
+    END                                                AS email_root_raw
+  FROM silver.unified s
+  WHERE s.company_name IS NOT NULL
+    AND btrim(s.company_name) <> ''
+    AND util.company_name_norm_langless(s.company_name) IS NOT NULL
+    AND util.is_placeholder_company_name(s.company_name) = FALSE
 ),
 
 -- ---------------  One best candidate per name ---------------
