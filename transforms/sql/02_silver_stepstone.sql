@@ -47,6 +47,20 @@ fields AS (
     p.jd ->> 'job_type'     AS job_type_raw,
     p.jd ->> 'job_function' AS job_function_raw,
 
+    -- Job locations can be string or array; normalize to text
+    CASE
+      WHEN jsonb_typeof(p.jd -> 'job_location') = 'array' THEN
+        array_to_string(
+          ARRAY(
+            SELECT btrim(loc)
+            FROM jsonb_array_elements_text(p.jd -> 'job_location') AS loc
+          ), ' | '
+        )
+      WHEN jsonb_typeof(p.jd -> 'job_location') = 'string' THEN
+        NULLIF(btrim(p.jd ->> 'job_location'), '')
+      ELSE NULL
+    END AS job_location_raw,
+
     -- URLs: support snake_case and camelCase
     NULLIF(COALESCE(
       p.jd ->> 'job_url_direct',
@@ -188,8 +202,23 @@ norm AS (
 
     -- Location
     f.location_raw,
-    NULLIF(split_part(f.location_raw, ', ', 1), '') AS city_guess,
-    NULLIF(split_part(f.location_raw, ', ', 2), '') AS region_guess,
+    f.job_location_raw,
+    NULLIF(
+      split_part(
+        COALESCE(split_part(f.job_location_raw, ' | ', 1), f.location_raw),
+        ', ',
+        1
+      ),
+      ''
+    ) AS city_guess,
+    NULLIF(
+      split_part(
+        COALESCE(split_part(f.job_location_raw, ' | ', 1), f.location_raw),
+        ', ',
+        2
+      ),
+      ''
+    ) AS region_guess,
     NULL::text                                      AS country_guess,
 
     -- Date
@@ -267,15 +296,15 @@ keep AS (
       OR COALESCE(n.job_url_direct, n.company_website, n.emails_raw) IS NOT NULL
     )
 )
-SELECT
-  source, source_id, source_row_url, job_url_direct,
-  title_raw, title_norm, description_raw,
-  company_raw, company_name,
-  location_raw, city_guess, region_guess, country_guess,
-  date_posted, is_remote, contract_type_raw,
-  work_type_raw, job_type_raw, job_function_raw,
-  salary_min, salary_max, currency, salary_interval, salary_source,
-  emails_all, emails_raw, contact_email_domain, contact_email_root, contacts_raw,
+  SELECT
+    source, source_id, source_row_url, job_url_direct,
+    title_raw, title_norm, description_raw,
+    company_raw, company_name,
+    location_raw, job_location_raw, city_guess, region_guess, country_guess,
+    date_posted, is_remote, contract_type_raw,
+    work_type_raw, job_type_raw, job_function_raw,
+    salary_min, salary_max, currency, salary_interval, salary_source,
+    emails_all, emails_raw, contact_email_domain, contact_email_root, contacts_raw,
   apply_domain, apply_root,
   company_website_raw, company_linkedin_url, company_website, company_domain,
   company_size_raw, company_industry_raw, company_logo_url, company_description_raw,
