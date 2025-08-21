@@ -23,6 +23,7 @@ WITH src AS (
     js.location                                   AS location_raw,
     NULLIF(js.location, '')                       AS job_location_raw,
     NULLIF(js.company_addresses,'')               AS company_location_raw,
+    js.is_remote                                  AS is_remote_raw,
     js.date_posted                                AS date_posted_raw
   FROM public.jobspy_job_scrape js
 ),
@@ -56,7 +57,7 @@ norm AS (
     END                                         AS date_posted,
 
     /* flags */
-    (s.location_raw ILIKE '%remote%' OR s.company_name ILIKE '%remote%') AS is_remote,
+    CASE WHEN s.is_remote_raw = '[v]' THEN TRUE ELSE FALSE END AS is_remote,
     s.contract_type_raw,
 
     /* pay */
