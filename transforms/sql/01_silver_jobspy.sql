@@ -1,6 +1,6 @@
 -- Silver view for JobSpy → normalized common shape
 -- Raw table (assumed): public.jobspy_job_scrape
--- Known columns: id, company, company_url, company_url_direct, emails, job_url, job_url_direct, location, job_location, company_location, date_posted, (others may exist)
+-- Known columns: id, company, company_url, company_url_direct, emails, job_url, job_url_direct, location, job_data (json), company_location, date_posted, (others may exist)
 
 CREATE SCHEMA IF NOT EXISTS silver;
 
@@ -20,7 +20,7 @@ WITH src AS (
     NULLIF(js.company_description,'')             AS company_description_raw,
     js.emails                                     AS emails_raw,
     js.location                                   AS location_raw,
-    COALESCE(NULLIF(js.job_location,''), NULLIF(js.location,'')) AS job_location_raw,
+    COALESCE(NULLIF(js.job_data ->> 'job_location',''), NULLIF(js.location,'')) AS job_location_raw,
     NULLIF(js.company_location,'')                AS company_location_raw,
     js.date_posted                                AS date_posted_raw
   FROM public.jobspy_job_scrape js
@@ -41,7 +41,6 @@ norm AS (
 
     s.location_raw,
     s.job_location_raw,
-    s.company_location_raw,
     /* naive location parsing (best-effort; keeps compatible types) */
     NULLIF(split_part(COALESCE(s.job_location_raw, s.location_raw), ', ', 1), '') AS city_guess,
     NULLIF(split_part(COALESCE(s.job_location_raw, s.location_raw), ', ', 2), '') AS region_guess,
