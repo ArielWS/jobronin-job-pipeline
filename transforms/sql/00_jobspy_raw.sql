@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS public.jobspy_job_scrape (
     location TEXT,
     company_addresses TEXT,
     is_remote TEXT,
-    job_data JSONB,
     date_posted TIMESTAMPTZ
 );
 
@@ -27,7 +26,7 @@ DECLARE
         'id', 'title', 'job_type', 'company', 'company_industry',
         'company_url', 'company_url_direct', 'job_url', 'job_url_direct',
         'company_logo', 'company_description', 'emails', 'location',
-        'company_addresses', 'is_remote', 'job_data', 'date_posted'
+        'company_addresses', 'is_remote', 'date_posted'
     ];
     missing_columns TEXT[];
     extra_columns TEXT[];

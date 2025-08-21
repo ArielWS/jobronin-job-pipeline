@@ -1,6 +1,6 @@
 -- Silver view for JobSpy → normalized common shape
 -- Raw table (assumed): public.jobspy_job_scrape
--- Known columns: id, company, company_url, company_url_direct, emails, job_url, job_url_direct, location, job_data (json), company_location, date_posted, (others may exist)
+-- Known columns: id, company, company_url, company_url_direct, emails, job_url, job_url_direct, location, company_location, date_posted, (others may exist)
 
 CREATE SCHEMA IF NOT EXISTS silver;
 
@@ -18,7 +18,7 @@ WITH src AS (
     NULLIF(js.job_url,'')                         AS job_url_fallback,
     NULLIF(js.company_logo,'')                    AS company_logo_url,
     NULLIF(js.company_description,'')             AS company_description_raw,
-    NULLIF(js.job_data->>'description', '')       AS description_raw,
+    NULL::text                                   AS description_raw,
     js.emails                                     AS emails_raw,
     js.location                                   AS location_raw,
     NULLIF(js.location, '')                       AS job_location_raw,
