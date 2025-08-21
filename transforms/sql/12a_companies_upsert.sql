@@ -17,9 +17,7 @@ WITH src_jobspy AS (
     CASE
       WHEN util.is_generic_email_domain(util.email_domain(util.first_email(js.emails))) THEN NULL
       ELSE util.email_domain(util.first_email(js.emails))
-    END                                                 AS email_root_raw,
-    -- apply host root from job link
-    util.org_domain(util.url_host(COALESCE(js.job_url_direct, js.job_url)))          AS apply_root_raw
+    END                                                 AS email_root_raw
   FROM public.jobspy_job_scrape js
   WHERE js.company IS NOT NULL
     AND btrim(js.company) <> ''
@@ -35,8 +33,7 @@ src_stepstone AS (
     st.client_name                                      AS company_name,
     util.company_name_norm_langless(st.client_name)     AS name_norm,
     NULL::text                                          AS site_root_raw,
-    NULL::text                                          AS email_root_raw,
-    NULL::text                                          AS apply_root_raw
+    NULL::text                                          AS email_root_raw
   FROM public.stepstone_job_scrape st
   WHERE st.client_name IS NOT NULL
     AND btrim(st.client_name) <> ''
@@ -52,8 +49,7 @@ src_profesia AS (
     COALESCE(jd->>'company', jd->>'company_name')      AS company_name,
     util.company_name_norm_langless(COALESCE(jd->>'company', jd->>'company_name')) AS name_norm,
     NULL::text                                         AS site_root_raw,
-    NULL::text                                         AS email_root_raw,
-    NULL::text                                         AS apply_root_raw
+    NULL::text                                         AS email_root_raw
   FROM public.profesiask_job_scrape ps
   CROSS JOIN LATERAL (SELECT util.json_clean(ps.job_data) AS jd) j
   WHERE COALESCE(j.jd->>'company', j.jd->>'company_name') IS NOT NULL
@@ -143,7 +139,7 @@ resolved AS (
   SELECT
     s.source, s.source_id, s.source_row_url,
     s.company_name, s.name_norm,
-    s.apply_root_raw, s.email_root_raw,
+    s.email_root_raw,
     CASE
       WHEN s.site_root_raw IS NOT NULL
            AND NOT util.is_aggregator_host(s.site_root_raw)
@@ -194,11 +190,7 @@ add_evidence AS (
       ('website', r.org_root_candidate),
       ('email',   CASE WHEN r.email_root_raw IS NOT NULL
                            AND NOT util.is_generic_email_domain(r.email_root_raw)
-                       THEN r.email_root_raw END),
-      ('apply',   CASE WHEN r.apply_root_raw IS NOT NULL
-                           AND NOT util.is_aggregator_host(r.apply_root_raw)
-                           AND NOT util.is_ats_host(r.apply_root_raw)
-                       THEN r.apply_root_raw END)
+                       THEN r.email_root_raw END)
   ) AS kv(kind, val)
   WHERE r.company_id IS NOT NULL
     AND kv.val IS NOT NULL
