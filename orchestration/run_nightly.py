@@ -2,6 +2,7 @@ import os
 import psycopg
 
 FILES = [
+    "transforms/sql/00_jobspy_raw.sql",
     "transforms/sql/04_util_functions.sql",
     "transforms/sql/01_silver_jobspy.sql",
     "transforms/sql/02_silver_profesia_sk.sql",

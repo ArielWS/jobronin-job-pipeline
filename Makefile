@@ -11,6 +11,7 @@ worker:
 
 # Minimal company pipeline (idempotent)
 PIPELINE_SQL = \
+  transforms/sql/00_jobspy_raw.sql \
   transforms/sql/04_util_functions.sql \
   transforms/sql/01_silver_jobspy.sql \
   transforms/sql/02_silver_profesia_sk.sql \
@@ -38,6 +39,7 @@ nightly:
 
 sql-companies:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_extensions.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_jobspy_raw.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/01_silver_jobspy.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_profesia_sk.sql
