@@ -20,7 +20,7 @@ WITH src AS (
     NULLIF(js.company_description,'')             AS company_description_raw,
     js.emails                                     AS emails_raw,
     js.location                                   AS location_raw,
-    COALESCE(NULLIF(js.job_data ->> 'job_location',''), NULLIF(js.location,'')) AS job_location_raw,
+    NULLIF(js.location, '')                       AS job_location_raw,
     NULLIF(js.company_location,'')                AS company_location_raw,
     js.date_posted                                AS date_posted_raw
   FROM public.jobspy_job_scrape js
