@@ -25,9 +25,10 @@ PIPELINE_FILES = [
 ]
 
 RAW_QUERIES = {
-    "jobspy": "SELECT id::text AS source_id, * FROM public.jobspy_job_scrape ORDER BY id DESC OFFSET %(off)s LIMIT 1",
-    "profesia_sk": "SELECT id, md5(util.json_clean(job_data)->>'job_url') AS source_id, * FROM public.profesiask_job_scrape ORDER BY id DESC OFFSET %(off)s LIMIT 1",
-    "stepstone": "SELECT id::text AS source_id, * FROM public.stepstone_job_scrape ORDER BY id DESC OFFSET %(off)s LIMIT 1",
+    # Order rows by scrape timestamp so OFFSET picks the desired recent record
+    "jobspy": "SELECT id::text AS source_id, * FROM public.jobspy_job_scrape ORDER BY scraped_at DESC OFFSET %(off)s LIMIT 1",
+    "profesia_sk": "SELECT id, md5(util.json_clean(job_data)->>'job_url') AS source_id, * FROM public.profesiask_job_scrape ORDER BY scraped_at DESC OFFSET %(off)s LIMIT 1",
+    "stepstone": "SELECT id::text AS source_id, * FROM public.stepstone_job_scrape ORDER BY timestamp DESC OFFSET %(off)s LIMIT 1",
 }
 
 
