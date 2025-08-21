@@ -1,32 +1,32 @@
-name: nightly
-on:
-  schedule:
-    - cron: "0 20 * * *"
-  workflow_dispatch:
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install psql
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-    - name: Run minimal company pipeline
-      env:
-        DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      run: |
-        set -euo pipefail
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/01_silver_jobspy.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_stepstone.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/03_unified_stage.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/10_gold_company.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12c_company_brand_rules.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_upsert.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_company_evidence.sql
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12e_company_promote_domain.sql
-    - name: Run sanity checks
-      env:
-        DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      run: |
-        set -euo pipefail
-        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
+# name: nightly
+# on:
+#   schedule:
+#     - cron: "0 20 * * *"
+#   workflow_dispatch:
+# jobs:
+#   run:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - name: Install psql
+#         run: sudo apt-get update && sudo apt-get install -y postgresql-client
+#     - name: Run minimal company pipeline
+#       env:
+#         DATABASE_URL: ${{ secrets.DATABASE_URL }}
+#       run: |
+#         set -euo pipefail
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/01_silver_jobspy.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_stepstone.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/03_unified_stage.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/10_gold_company.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12c_company_brand_rules.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_companies_upsert.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12a_company_evidence.sql
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12e_company_promote_domain.sql
+#     - name: Run sanity checks
+#       env:
+#         DATABASE_URL: ${{ secrets.DATABASE_URL }}
+#       run: |
+#         set -euo pipefail
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
