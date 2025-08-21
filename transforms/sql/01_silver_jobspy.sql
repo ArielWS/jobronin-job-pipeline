@@ -63,8 +63,14 @@ norm AS (
 
     /* emails */
     s.emails_raw,
-    util.email_domain(util.first_email(s.emails_raw))          AS contact_email_domain,
-    util.org_domain(util.email_domain(util.first_email(s.emails_raw))) AS contact_email_root,
+    CASE
+      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(s.emails_raw))) THEN NULL
+      ELSE util.email_domain(util.first_email(s.emails_raw))
+    END                                         AS contact_email_domain,
+    CASE
+      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(s.emails_raw))) THEN NULL
+      ELSE util.org_domain(util.email_domain(util.first_email(s.emails_raw)))
+    END                                         AS contact_email_root,
 
     /* apply */
     util.url_host(COALESCE(s.job_url_direct_raw, s.job_url_fallback))         AS apply_domain,
