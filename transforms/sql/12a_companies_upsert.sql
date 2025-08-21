@@ -43,10 +43,30 @@ src_stepstone AS (
     AND util.company_name_norm_langless(st.client_name) IS NOT NULL
     AND util.is_placeholder_company_name(st.client_name) = FALSE
 ),
+src_profesia AS (
+  -- Name-only; parse company from job_data JSON
+  SELECT DISTINCT
+    'profesia_sk'::text                                AS source,
+    ps.id::text                                        AS source_id,
+    NULL::text                                         AS source_row_url,
+    COALESCE(jd->>'company', jd->>'company_name')      AS company_name,
+    util.company_name_norm_langless(COALESCE(jd->>'company', jd->>'company_name')) AS name_norm,
+    NULL::text                                         AS site_root_raw,
+    NULL::text                                         AS email_root_raw,
+    NULL::text                                         AS apply_root_raw
+  FROM public.profesiask_job_scrape ps
+  CROSS JOIN LATERAL (SELECT util.json_clean(ps.job_data) AS jd) j
+  WHERE COALESCE(j.jd->>'company', j.jd->>'company_name') IS NOT NULL
+    AND btrim(COALESCE(j.jd->>'company', j.jd->>'company_name')) <> ''
+    AND util.company_name_norm_langless(COALESCE(j.jd->>'company', j.jd->>'company_name')) IS NOT NULL
+    AND util.is_placeholder_company_name(COALESCE(j.jd->>'company', j.jd->>'company_name')) = FALSE
+),
 src AS (
   SELECT * FROM src_jobspy
   UNION ALL
   SELECT * FROM src_stepstone
+  UNION ALL
+  SELECT * FROM src_profesia
 ),
 
 -- ---------------  One best candidate per name ---------------
