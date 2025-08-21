@@ -13,7 +13,12 @@ WITH src AS (
     util.company_name_norm_langless(s.company_name)    AS name_norm,
     util.org_domain(s.company_domain)                  AS site_root_raw,
     s.company_description_raw                          AS company_description_raw,
-    regexp_replace(regexp_substr(s.company_size_raw, '\\d+\\s*-\\s*\\d+'), '\\s', '', 'g') AS company_size_raw,
+    regexp_replace(
+      regexp_substr(s.company_size_raw, '\\d+\\s*[-–—]?\\s*\\d*\\+?'),
+      '\\s',
+      '',
+      'g'
+    ) AS company_size_raw,
     s.company_industry_raw                             AS company_industry_raw,
     s.company_logo_url                                 AS company_logo_url,
     CASE
