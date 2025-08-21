@@ -1,6 +1,6 @@
 -- Silver view for JobSpy → normalized common shape
 -- Raw table (assumed): public.jobspy_job_scrape
--- Known columns: id, company, company_url, company_url_direct, emails, job_url, job_url_direct, location, date_posted, (others may exist)
+-- Known columns: id, company, company_url, company_url_direct, emails, job_url, job_url_direct, location, job_location, company_location, date_posted, (others may exist)
 
 CREATE SCHEMA IF NOT EXISTS silver;
 
@@ -20,6 +20,8 @@ WITH src AS (
     NULLIF(js.company_description,'')             AS company_description_raw,
     js.emails                                     AS emails_raw,
     js.location                                   AS location_raw,
+    COALESCE(NULLIF(js.job_location,''), NULLIF(js.location,'')) AS job_location_raw,
+    NULLIF(js.company_location,'')                AS company_location_raw,
     js.date_posted                                AS date_posted_raw
   FROM public.jobspy_job_scrape js
 ),
@@ -38,9 +40,11 @@ norm AS (
     s.company_name,
 
     s.location_raw,
+    s.job_location_raw,
+    s.company_location_raw,
     /* naive location parsing (best-effort; keeps compatible types) */
-    NULLIF(split_part(s.location_raw, ', ', 1), '') AS city_guess,
-    NULLIF(split_part(s.location_raw, ', ', 2), '') AS region_guess,
+    NULLIF(split_part(COALESCE(s.job_location_raw, s.location_raw), ', ', 1), '') AS city_guess,
+    NULLIF(split_part(COALESCE(s.job_location_raw, s.location_raw), ', ', 2), '') AS region_guess,
     NULL::text                                       AS country_guess,
 
     /* dates */
@@ -88,18 +92,19 @@ norm AS (
     NULL::text                                   AS company_size_raw,
     s.company_industry_raw,
     s.company_logo_url,
-    s.company_description_raw
+    s.company_description_raw,
+    s.company_location_raw
   FROM src s
 )
 SELECT
   source, source_id, source_row_url, job_url_direct,
   title_raw, title_norm,
   company_raw, company_name,
-  location_raw, city_guess, region_guess, country_guess,
+  location_raw, job_location_raw, city_guess, region_guess, country_guess,
   date_posted, is_remote, contract_type_raw,
   salary_min, salary_max, currency,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
   company_website_raw, company_linkedin_url, company_website, company_domain,
-  company_size_raw, company_industry_raw, company_logo_url, company_description_raw
+  company_size_raw, company_industry_raw, company_logo_url, company_description_raw, company_location_raw
 FROM norm;
