@@ -27,6 +27,7 @@ fields AS (
     p.location_raw,
     p.ts_raw,
     p.jd,
+    COALESCE(p.jd ->> 'publicationDate', p.jd #>> '{job,publicationDate}') AS date_posted_raw,
 
     -- Company & title from multiple likely keys (string or object)
     btrim(NULLIF(COALESCE(
@@ -114,7 +115,11 @@ norm AS (
     NULL::text                                      AS country_guess,
 
     -- Date
-    CASE WHEN f.ts_raw IS NOT NULL THEN f.ts_raw::timestamptz ELSE NULL END AS date_posted,
+    CASE
+      WHEN f.date_posted_raw IS NOT NULL THEN f.date_posted_raw::timestamptz
+      WHEN f.ts_raw IS NOT NULL THEN f.ts_raw::timestamptz
+      ELSE NULL
+    END AS date_posted,
 
     -- Flags
     (f.location_raw ILIKE '%remote%' OR f.title_raw ILIKE '%remote%') AS is_remote,
