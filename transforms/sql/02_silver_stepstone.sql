@@ -68,8 +68,12 @@ fields AS (
       p.jd #>> '{employer,website}'
     ), '') AS company_website_raw,
 
-    -- Try to find *any* email in the JSON blob for contact root
-    util.first_email(p.jd::text) AS email_found,
+    -- Collect all explicit emails and contact objects
+    c.emails_all,
+    c.contacts_raw,
+
+    -- Pick a representative email for legacy fields
+    COALESCE(c.emails_all[1], util.first_email(p.jd::text)) AS email_found,
 
     -- Enrichment bits commonly present in StepStone payloads (best-effort)
     COALESCE(p.jd #>> '{company,size}', p.jd ->> 'companySize', p.jd #>> '{company_profile,employees}') AS company_size_raw,
@@ -110,6 +114,41 @@ fields AS (
       p.jd ->> 'salary_source'
     ) AS salary_source_raw
   FROM parsed p
+  LEFT JOIN LATERAL (
+    SELECT
+      (
+        SELECT ARRAY(
+          SELECT DISTINCT e
+          FROM (
+            SELECT jsonb_array_elements_text(
+              CASE
+                WHEN jsonb_typeof(p.jd -> 'emails') = 'array'
+                  THEN p.jd -> 'emails'
+                WHEN jsonb_typeof(p.jd -> 'emails') = 'string'
+                  THEN to_jsonb(string_to_array(p.jd ->> 'emails', ','))
+                ELSE '[]'::jsonb
+              END
+            ) AS e
+            UNION
+            SELECT c ->> 'email'
+            FROM jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(p.jd -> 'contacts') = 'array'
+                  THEN p.jd -> 'contacts'
+                ELSE '[]'::jsonb
+              END
+            ) c
+            WHERE c ->> 'email' IS NOT NULL
+          ) q
+          WHERE e IS NOT NULL
+        )
+      ) AS emails_all,
+      CASE
+        WHEN jsonb_typeof(p.jd -> 'contacts') IN ('array', 'object')
+          THEN p.jd -> 'contacts'
+        ELSE NULL
+      END AS contacts_raw
+  ) c ON TRUE
 ),
 norm AS (
   SELECT
@@ -177,9 +216,11 @@ norm AS (
     f.salary_source_raw   AS salary_source,
 
     -- Emails → domains
+    f.emails_all,
     f.email_found                                AS emails_raw,
     util.email_domain(f.email_found)             AS contact_email_domain,
     util.org_domain(util.email_domain(f.email_found)) AS contact_email_root,
+    f.contacts_raw,
 
     -- Apply
     util.url_host(f.job_url_direct)                   AS apply_domain,
@@ -234,7 +275,7 @@ SELECT
   date_posted, is_remote, contract_type_raw,
   work_type_raw, job_type_raw, job_function_raw,
   salary_min, salary_max, currency, salary_interval, salary_source,
-  emails_raw, contact_email_domain, contact_email_root,
+  emails_all, emails_raw, contact_email_domain, contact_email_root, contacts_raw,
   apply_domain, apply_root,
   company_website_raw, company_linkedin_url, company_website, company_domain,
   company_size_raw, company_industry_raw, company_logo_url, company_description_raw,
