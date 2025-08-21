@@ -90,6 +90,7 @@ Idempotent: safe to run nightly.
 Make targets
 make sql-companies — run the company portion (silver → gold + evidence + promotion + checks)
 make sanity — quick counts/joins from scripts/sanity.sql
+make trace-pipeline SOURCE=jobspy OFFSET=0 — debug a single job through the pipeline (requires DATABASE_URL)
 
 Getting started (local)
 cp .env.sample .env
