@@ -74,7 +74,36 @@ fields AS (
     COALESCE(p.jd #>> '{company,size}', p.jd ->> 'companySize')         AS company_size_raw,
     COALESCE(p.jd #>> '{company,industry}', p.jd #>> '{industry,name}') AS company_industry_raw,
     COALESCE(p.jd #>> '{company,logoUrl}', p.jd ->> 'companyLogoUrl')   AS company_logo_url,
-    COALESCE(p.jd ->> 'companyDescription', p.jd #>> '{company,description}') AS company_description_raw
+    COALESCE(p.jd ->> 'companyDescription', p.jd #>> '{company,description}') AS company_description_raw,
+
+    -- Salary fields can appear in multiple shapes; coalesce common keys
+    COALESCE(
+      p.jd ->> 'salaryMin',
+      p.jd #>> '{salary,min}',
+      p.jd ->> 'min_amount',
+      p.jd #>> '{salary,min_amount}'
+    ) AS salary_min_raw,
+    COALESCE(
+      p.jd ->> 'salaryMax',
+      p.jd #>> '{salary,max}',
+      p.jd ->> 'max_amount',
+      p.jd #>> '{salary,max_amount}'
+    ) AS salary_max_raw,
+    COALESCE(
+      p.jd ->> 'salaryCurrency',
+      p.jd #>> '{salary,currency}',
+      p.jd ->> 'currency'
+    ) AS salary_currency_raw,
+    COALESCE(
+      p.jd ->> 'salaryInterval',
+      p.jd #>> '{salary,interval}',
+      p.jd ->> 'interval'
+    ) AS salary_interval_raw,
+    COALESCE(
+      p.jd ->> 'salarySource',
+      p.jd #>> '{salary,source}',
+      p.jd ->> 'salary_source'
+    ) AS salary_source_raw
   FROM parsed p
 ),
 norm AS (
@@ -134,11 +163,13 @@ norm AS (
     f.job_function_raw,
 
     -- Pay (guard casts in case StepStone uses strings)
-    CASE WHEN (f.jd ->> 'salaryMin') ~ '^-?[0-9]+(\.[0-9]+)?$'
-         THEN (f.jd ->> 'salaryMin')::numeric ELSE NULL END AS salary_min,
-    CASE WHEN (f.jd ->> 'salaryMax') ~ '^-?[0-9]+(\.[0-9]+)?$'
-         THEN (f.jd ->> 'salaryMax')::numeric ELSE NULL END AS salary_max,
-    COALESCE(f.jd ->> 'salaryCurrency', f.jd #>> '{salary,currency}') AS currency,
+    CASE WHEN f.salary_min_raw ~ '^-?[0-9]+(\.[0-9]+)?$'
+         THEN f.salary_min_raw::numeric ELSE NULL END AS salary_min,
+    CASE WHEN f.salary_max_raw ~ '^-?[0-9]+(\.[0-9]+)?$'
+         THEN f.salary_max_raw::numeric ELSE NULL END AS salary_max,
+    f.salary_currency_raw AS currency,
+    f.salary_interval_raw AS salary_interval,
+    f.salary_source_raw   AS salary_source,
 
     -- Emails → domains
     f.email_found                                AS emails_raw,
@@ -193,7 +224,7 @@ SELECT
   location_raw, city_guess, region_guess, country_guess,
   date_posted, is_remote, contract_type_raw,
   work_type_raw, job_type_raw, job_function_raw,
-  salary_min, salary_max, currency,
+  salary_min, salary_max, currency, salary_interval, salary_source,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
   company_website_raw, company_linkedin_url, company_website, company_domain,
