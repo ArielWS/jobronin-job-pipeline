@@ -18,6 +18,7 @@ SELECT
   NULL::text AS description_raw,
 
   location_raw,
+  job_location_raw,
   city_guess,
   region_guess,
   country_guess,
@@ -43,7 +44,8 @@ SELECT
   company_size_raw,
   company_industry_raw,
   company_logo_url,
-  company_description_raw
+  company_description_raw,
+  company_location_raw
 FROM silver.jobspy
 UNION ALL
 SELECT
@@ -60,6 +62,7 @@ SELECT
   NULL::text AS description_raw,
 
   location_raw,
+  job_location_raw,
   city_guess,
   region_guess,
   country_guess,
@@ -85,7 +88,8 @@ SELECT
   company_size_raw,
   company_industry_raw,
   company_logo_url,
-  company_description_raw
+  company_description_raw,
+  company_location_raw
 FROM silver.stepstone
 UNION ALL
 SELECT
@@ -101,7 +105,8 @@ SELECT
   company_name,
   description_raw,
 
-  location_raw,
+  job_location_raw AS location_raw,
+  job_location_raw,
   city_guess,
   region_guess,
   country_guess,
@@ -127,5 +132,6 @@ SELECT
   company_size_raw,
   company_industry_raw,
   company_logo_url,
-  company_description_raw
+  company_description_raw,
+  company_location_raw
 FROM silver.profesia_sk;
