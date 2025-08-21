@@ -22,7 +22,7 @@ fields AS (
       NULLIF(jd->>'job_description', ''),
       NULLIF(jd->>'description', '')
     ) AS description_raw,
-    jd->>'location'                            AS location_raw,
+    jd->>'location'                            AS job_location_raw,
     COALESCE(jd->>'contract_type', jd->>'employment_type', jd->>'job_type') AS contract_type_raw,
     CASE
       WHEN jd ? 'is_remote' THEN
@@ -64,7 +64,8 @@ fields AS (
     jd->>'company_size'                       AS company_size_raw,
     jd->>'industry'                           AS company_industry_raw,
     jd->>'company_logo_url'                   AS company_logo_url,
-    jd->>'company_description'                AS company_description_raw
+    jd->>'company_description'                AS company_description_raw,
+    COALESCE(jd->>'company_address', jd->>'company_location') AS company_location_raw
   FROM raw
 ),
 norm AS (
@@ -84,9 +85,9 @@ norm AS (
       ELSE NULL
     END                                       AS company_name,
     f.description_raw,
-    f.location_raw,
-    NULLIF(split_part(f.location_raw, ', ', 1), '') AS city_guess,
-    NULLIF(split_part(f.location_raw, ', ', 2), '') AS region_guess,
+    f.job_location_raw,
+    NULLIF(split_part(f.job_location_raw, ', ', 1), '') AS city_guess,
+    NULLIF(split_part(f.job_location_raw, ', ', 2), '') AS region_guess,
     NULL::text                                AS country_guess,
     CASE
       WHEN f.date_posted_raw ~ '^\d{4}-\d{2}-\d{2}$'
@@ -125,7 +126,8 @@ norm AS (
     f.company_size_raw,
     f.company_industry_raw,
     f.company_logo_url,
-    f.company_description_raw
+    f.company_description_raw,
+    f.company_location_raw
   FROM fields f
 ),
 keep AS (
@@ -143,11 +145,11 @@ SELECT
   title_raw, title_norm,
   company_raw, company_name,
   description_raw,
-  location_raw, city_guess, region_guess, country_guess,
+  job_location_raw, city_guess, region_guess, country_guess,
   date_posted, is_remote, contract_type_raw,
   salary_min, salary_max, currency,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
   company_website_raw, company_linkedin_url, company_website, company_domain,
-  company_size_raw, company_industry_raw, company_logo_url, company_description_raw
+  company_size_raw, company_industry_raw, company_logo_url, company_description_raw, company_location_raw
 FROM keep;
