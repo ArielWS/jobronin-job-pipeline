@@ -11,6 +11,25 @@ SELECT CASE
 END
 $$;
 
+-- Parse a free-form location string into city/region/country
+CREATE OR REPLACE FUNCTION util.location_parse(loc text)
+RETURNS TABLE(city text, region text, country text)
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  parts text[];
+BEGIN
+  IF loc IS NULL OR btrim(loc) = '' THEN
+    RETURN;
+  END IF;
+  parts := regexp_split_to_array(loc, '\\s*,\\s*');
+  city    := NULLIF(parts[1], '');
+  region  := NULLIF(parts[2], '');
+  country := NULLIF(parts[3], '');
+  RETURN;
+END;
+$$;
+
+
 -- collapse to org root (eTLD+1-ish)
 CREATE OR REPLACE FUNCTION util.org_domain(h text)
 RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$

@@ -44,10 +44,10 @@ norm AS (
 
     s.location_raw,
     s.job_location_raw,
-    /* naive location parsing (best-effort; keeps compatible types) */
-    NULLIF(split_part(COALESCE(s.job_location_raw, s.location_raw), ', ', 1), '') AS city_guess,
-    NULLIF(split_part(COALESCE(s.job_location_raw, s.location_raw), ', ', 2), '') AS region_guess,
-    NULL::text                                       AS country_guess,
+    /* best-effort location parsing (includes country when present) */
+    lp.city                                          AS city_guess,
+    lp.region                                        AS region_guess,
+    lp.country                                       AS country_guess,
 
     /* dates */
     CASE
@@ -103,6 +103,7 @@ norm AS (
     s.company_description_raw,
     s.company_location_raw
   FROM src s
+  LEFT JOIN LATERAL util.location_parse(COALESCE(s.job_location_raw, s.location_raw)) lp ON TRUE
 )
 SELECT
   source, source_id, source_row_url, job_url_direct,
