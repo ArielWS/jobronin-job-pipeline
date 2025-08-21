@@ -31,6 +31,12 @@ RAW_QUERIES = {
     "stepstone": "SELECT id::text AS source_id, * FROM public.stepstone_job_scrape ORDER BY timestamp DESC OFFSET %(off)s LIMIT 1",
 }
 
+RAW_TABLES = {
+    "jobspy": "public.jobspy_job_scrape",
+    "profesia_sk": "public.profesiask_job_scrape",
+    "stepstone": "public.stepstone_job_scrape",
+}
+
 
 def parse_args() -> dict:
     args = {}
@@ -72,7 +78,7 @@ def main() -> None:
                 print("No raw row found", file=sys.stderr)
                 sys.exit(1)
             ctx["source_id"] = raw_row["source_id"]
-            log.append({"step": "raw", "table": f"public.{source}", "rows": [raw_row]})
+            log.append({"step": "raw", "table": RAW_TABLES[source], "rows": [raw_row]})
 
             for file in PIPELINE_FILES:
                 sql = Path(file).read_text()
