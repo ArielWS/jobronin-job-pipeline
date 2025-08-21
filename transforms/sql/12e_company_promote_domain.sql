@@ -7,13 +7,20 @@ BEGIN;
 -- A) UPGRADE to a trustworthy WEBSITE domain if we currently have null or a weaker domain.
 UPDATE gold.company gc
 SET website_domain = w.value
-FROM gold.company_evidence_domain w
+FROM (
+    SELECT DISTINCT ON (ed.value, COALESCE(c.brand_key,''))
+        ed.company_id,
+        ed.value
+    FROM gold.company_evidence_domain ed
+    JOIN gold.company c ON c.company_id = ed.company_id
+    WHERE ed.kind = 'website'
+      AND ed.value IS NOT NULL
+      AND NOT util.is_aggregator_host(ed.value)
+      AND NOT util.is_ats_host(ed.value)
+      AND NOT util.is_career_host(ed.value)
+    ORDER BY ed.value, COALESCE(c.brand_key,''), ed.company_id
+) w
 WHERE w.company_id = gc.company_id
-  AND w.kind = 'website'
-  AND w.value IS NOT NULL
-  AND NOT util.is_aggregator_host(w.value)
-  AND NOT util.is_ats_host(w.value)
-  AND NOT util.is_career_host(w.value)
   AND gc.website_domain IS DISTINCT FROM w.value
   AND (
         gc.website_domain IS NULL
