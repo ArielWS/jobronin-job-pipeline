@@ -42,6 +42,7 @@ fields AS (
       p.jd #>> '{header,title}',
       p.jd ->> 'title'
     )) AS title_raw,
+    COALESCE(p.jd ->> 'description', p.jd #>> '{job,description}') AS description_raw,
 
     -- URLs: support snake_case and camelCase
     NULLIF(COALESCE(
@@ -83,6 +84,7 @@ norm AS (
 
     f.title_raw,
     CASE WHEN f.title_raw IS NULL THEN NULL ELSE lower(btrim(f.title_raw)) END AS title_norm,
+    f.description_raw,
 
     -- Company: prefer JSON; else guess from title suffix (“ - WalkMe”, “ | WalkMe”, “ @ WalkMe”)
     f.company_name_json AS company_raw,
@@ -180,7 +182,7 @@ keep AS (
 )
 SELECT
   source, source_id, source_row_url, job_url_direct,
-  title_raw, title_norm,
+  title_raw, title_norm, description_raw,
   company_raw, company_name,
   location_raw, city_guess, region_guess, country_guess,
   date_posted, is_remote, contract_type_raw,
