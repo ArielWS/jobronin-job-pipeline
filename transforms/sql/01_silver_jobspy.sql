@@ -1,7 +1,7 @@
 -- transforms/sql/01_silver_jobspy.sql
 -- Silver view for JobSpy → normalized common shape
 -- Source (Bronze): public.jobspy_job_scrape
--- Depends on: util.url_host, util.org_domain, util.location_parse,
+-- Depends on: util.url_canonical, util.url_host, util.org_domain, util.location_parse,
 --             util.first_email, util.email_domain, util.is_generic_email_domain,
 --             util.is_aggregator_host, util.is_ats_host, util.is_career_host,
 --             util.company_name_norm, util.company_name_norm_langless
@@ -56,7 +56,7 @@ WITH src AS (
 ),
 norm AS (
   SELECT
-    'jobspy'::text                               AS source,
+    'jobspy'::text                                 AS source,
     s.source_site,
     s.source_id,
     s.scraped_at,
@@ -64,30 +64,30 @@ norm AS (
 
     -- Titles
     s.title_raw,
-    NULL::text                                   AS title_norm,
+    NULL::text                                     AS title_norm,
 
     -- Company names (normalized)
     s.company_raw,
     util.company_name_norm_langless(s.company_raw) AS company_name_norm_langless,
-    util.company_name_norm(s.company_raw)           AS company_name_norm,
+    util.company_name_norm(s.company_raw)          AS company_name_norm,
 
     -- Content
     s.description_raw,
 
     -- Location
     s.location_raw,
-    lp.city                                      AS city_guess,
-    lp.region                                    AS region_guess,
-    lp.country                                   AS country_guess,
+    lp.city                                        AS city_guess,
+    lp.region                                      AS region_guess,
+    lp.country                                     AS country_guess,
 
     -- Job meta
     s.contract_type_raw,
-    s.is_remote_raw                               AS is_remote,
+    s.is_remote_raw                                 AS is_remote,
 
     -- Compensation
-    s.salary_min_raw::numeric                    AS salary_min,
-    s.salary_max_raw::numeric                    AS salary_max,
-    s.currency_raw                               AS currency,
+    s.salary_min_raw::numeric                      AS salary_min,
+    s.salary_max_raw::numeric                      AS salary_max,
+    s.currency_raw                                 AS currency,
     CASE
       WHEN s.salary_interval_raw ILIKE 'hour%'  THEN 'hourly'
       WHEN s.salary_interval_raw ILIKE 'day%'   THEN 'daily'
@@ -95,61 +95,50 @@ norm AS (
       WHEN s.salary_interval_raw ILIKE 'month%' THEN 'monthly'
       WHEN s.salary_interval_raw ILIKE 'year%'  THEN 'yearly'
       ELSE NULL
-    END                                          AS salary_interval,
+    END                                            AS salary_interval,
 
     -- Listing URL (raw + canonical + helper id)
-    s.job_url_raw                                AS job_url_raw,
-    -- canonical: strip query (#, ?), then trailing slashes
-    CASE
-      WHEN s.job_url_raw IS NULL THEN NULL
-      ELSE regexp_replace(regexp_replace(s.job_url_raw, '[?#].*$', ''), '/+$', '')
-    END                                          AS job_url_canonical,
-    -- Extract LinkedIn numeric job id if present
-    (regexp_match(coalesce(s.job_url_raw,''), '/jobs/view/([0-9]+)'))[1] AS linkedin_job_id,
+    s.job_url_raw                                  AS job_url_raw,
+    util.url_canonical(s.job_url_raw)              AS job_url_canonical,
+    (regexp_match(coalesce(util.url_canonical(s.job_url_raw),''), '/jobs/view/([0-9]+)'))[1] AS linkedin_job_id,
 
     -- Apply URL: prefer direct; canonical + domains
-    COALESCE(s.apply_url_raw, s.job_url_raw)     AS apply_url_raw,
-    CASE
-      WHEN COALESCE(s.apply_url_raw, s.job_url_raw) IS NULL THEN NULL
-      ELSE regexp_replace(regexp_replace(COALESCE(s.apply_url_raw, s.job_url_raw), '[?#].*$', ''), '/+$', '')
-    END                                          AS apply_url_canonical,
-    util.url_host(COALESCE(s.apply_url_raw, s.job_url_raw))              AS apply_domain,
-    util.org_domain(util.url_host(COALESCE(s.apply_url_raw, s.job_url_raw))) AS apply_root,
+    COALESCE(s.apply_url_raw, s.job_url_raw)       AS apply_url_raw,
+    util.url_canonical(COALESCE(s.apply_url_raw, s.job_url_raw)) AS apply_url_canonical,
+    util.url_host(util.url_canonical(COALESCE(s.apply_url_raw, s.job_url_raw))) AS apply_domain,
+    util.org_domain(util.url_host(util.url_canonical(COALESCE(s.apply_url_raw, s.job_url_raw)))) AS apply_root,
 
     -- Company website: prefer direct; canonicalize; filter ATS/aggregator/career hosts
-    COALESCE(s.company_url_direct_raw, s.company_url_raw)                AS company_website_raw,
+    COALESCE(s.company_url_direct_raw, s.company_url_raw) AS company_website_raw,
+    util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw)) AS company_website_canonical,
     CASE
-      WHEN COALESCE(s.company_url_direct_raw, s.company_url_raw) IS NULL THEN NULL
-      ELSE regexp_replace(regexp_replace(COALESCE(s.company_url_direct_raw, s.company_url_raw), '[?#].*$', ''), '/+$', '')
-    END                                          AS company_website_canonical,
-    CASE
-      WHEN util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw)) = 'linkedin.com'
-        THEN COALESCE(s.company_url_direct_raw, s.company_url_raw)
+      WHEN util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))) = 'linkedin.com'
+        THEN util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))
       ELSE NULL
-    END                                          AS company_linkedin_url,
+    END                                            AS company_linkedin_url,
     CASE
-      WHEN util.is_aggregator_host(util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw))) THEN NULL
-      WHEN util.is_ats_host(util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw)))        THEN NULL
-      WHEN util.is_career_host(util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw)))     THEN NULL
-      ELSE COALESCE(s.company_url_direct_raw, s.company_url_raw)
-    END                                          AS company_website,
+      WHEN util.is_aggregator_host(util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw)))) THEN NULL
+      WHEN util.is_ats_host(util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))))        THEN NULL
+      WHEN util.is_career_host(util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))))     THEN NULL
+      ELSE util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))
+    END                                            AS company_website,
     CASE
-      WHEN util.is_aggregator_host(util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw))) THEN NULL
-      WHEN util.is_ats_host(util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw)))        THEN NULL
-      WHEN util.is_career_host(util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw)))     THEN NULL
-      ELSE util.org_domain(util.url_host(COALESCE(s.company_url_direct_raw, s.company_url_raw)))
-    END                                          AS company_domain,
+      WHEN util.is_aggregator_host(util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw)))) THEN NULL
+      WHEN util.is_ats_host(util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))))        THEN NULL
+      WHEN util.is_career_host(util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))))     THEN NULL
+      ELSE util.org_domain(util.url_host(util.url_canonical(COALESCE(s.company_url_direct_raw, s.company_url_raw))))
+    END                                            AS company_domain,
 
     -- Email → contact evidence
     s.emails_raw,
     CASE
       WHEN util.is_generic_email_domain(util.email_domain(util.first_email(s.emails_raw))) THEN NULL
       ELSE util.email_domain(util.first_email(s.emails_raw))
-    END                                          AS contact_email_domain,
+    END                                            AS contact_email_domain,
     CASE
       WHEN util.is_generic_email_domain(util.email_domain(util.first_email(s.emails_raw))) THEN NULL
       ELSE util.org_domain(util.email_domain(util.first_email(s.emails_raw)))
-    END                                          AS contact_email_root,
+    END                                            AS contact_email_root,
 
     -- Company passthroughs
     s.company_industry_raw,
