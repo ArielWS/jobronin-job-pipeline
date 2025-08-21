@@ -44,10 +44,10 @@ src_profesia AS (
   -- Name-only; parse company from job_data JSON
   SELECT DISTINCT
     'profesia_sk'::text                                AS source,
-    ps.id::text                                        AS source_id,
+    md5(j.jd->>'job_url')                              AS source_id,
     NULL::text                                         AS source_row_url,
-    COALESCE(jd->>'company', jd->>'company_name')      AS company_name,
-    util.company_name_norm_langless(COALESCE(jd->>'company', jd->>'company_name')) AS name_norm,
+    COALESCE(j.jd->>'company', j.jd->>'company_name')      AS company_name,
+    util.company_name_norm_langless(COALESCE(j.jd->>'company', j.jd->>'company_name')) AS name_norm,
     NULL::text                                         AS site_root_raw,
     NULL::text                                         AS email_root_raw
   FROM public.profesiask_job_scrape ps
