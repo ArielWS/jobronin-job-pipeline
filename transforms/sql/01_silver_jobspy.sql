@@ -18,6 +18,7 @@ WITH src AS (
     NULLIF(js.job_url,'')                         AS job_url_fallback,
     NULLIF(js.company_logo,'')                    AS company_logo_url,
     NULLIF(js.company_description,'')             AS company_description_raw,
+    NULLIF(js.job_data->>'description', '')       AS description_raw,
     js.emails                                     AS emails_raw,
     js.location                                   AS location_raw,
     NULLIF(js.location, '')                       AS job_location_raw,
@@ -38,6 +39,8 @@ norm AS (
 
     s.company_raw,
     s.company_name,
+
+    s.description_raw,
 
     s.location_raw,
     s.job_location_raw,
@@ -104,7 +107,7 @@ norm AS (
 SELECT
   source, source_id, source_row_url, job_url_direct,
   title_raw, title_norm,
-  company_raw, company_name,
+  company_raw, company_name, description_raw,
   location_raw, job_location_raw, city_guess, region_guess, country_guess,
   date_posted, is_remote, contract_type_raw,
   salary_min, salary_max, currency,

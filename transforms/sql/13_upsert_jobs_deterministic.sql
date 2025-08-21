@@ -13,7 +13,7 @@ WITH cand AS (
     s.region_guess,
     s.country_guess,
     s.date_posted,
-    s.description_raw,
+    NULLIF(s.description_raw, '') AS description_raw,
     s.is_remote,
     s.contract_type_raw,
     s.salary_min,
