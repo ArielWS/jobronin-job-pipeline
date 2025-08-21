@@ -56,3 +56,6 @@ sql-companies:
 
 sanity:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
+
+trace-pipeline:
+	python scripts/trace_pipeline.py SOURCE=$(SOURCE) OFFSET=$(OFFSET)
