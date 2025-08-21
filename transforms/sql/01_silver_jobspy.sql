@@ -7,16 +7,20 @@ CREATE SCHEMA IF NOT EXISTS silver;
 CREATE OR REPLACE VIEW silver.jobspy AS
 WITH src AS (
   SELECT
-    js.id::text                                  AS source_id,
-    js.company                                   AS company_raw,
-    btrim(js.company)                            AS company_name,
-    NULLIF(js.company_url_direct,'')             AS company_url_direct,
-    NULLIF(js.company_url,'')                    AS company_url_fallback,
-    NULLIF(js.job_url_direct,'')                 AS job_url_direct_raw,
-    NULLIF(js.job_url,'')                        AS job_url_fallback,
-    js.emails                                    AS emails_raw,
-    js.location                                  AS location_raw,
-    js.date_posted                               AS date_posted_raw
+    js.id::text                                   AS source_id,
+    NULLIF(js.title, '')                          AS title_raw,
+    NULLIF(js.job_type, '')                       AS contract_type_raw,
+    js.company                                    AS company_raw,
+    btrim(js.company)                             AS company_name,
+    NULLIF(js.company_industry, '')               AS company_industry_raw,
+    COALESCE(NULLIF(js.company_url_direct,''), NULLIF(js.company_url,'')) AS company_website_raw,
+    NULLIF(js.job_url_direct,'')                  AS job_url_direct_raw,
+    NULLIF(js.job_url,'')                         AS job_url_fallback,
+    NULLIF(js.company_logo,'')                    AS company_logo_url,
+    NULLIF(js.company_description,'')             AS company_description_raw,
+    js.emails                                     AS emails_raw,
+    js.location                                   AS location_raw,
+    js.date_posted                                AS date_posted_raw
   FROM public.jobspy_job_scrape js
 ),
 norm AS (
@@ -27,7 +31,7 @@ norm AS (
     COALESCE(s.job_url_direct_raw, s.job_url_fallback)              AS job_url_direct,
 
     /* Titles: many scrapes omit a stable title column; leave NULL if absent */
-    NULL::text                                   AS title_raw,
+    s.title_raw,
     NULL::text                                   AS title_norm,
 
     s.company_raw,
@@ -47,7 +51,7 @@ norm AS (
 
     /* flags */
     (s.location_raw ILIKE '%remote%' OR s.company_name ILIKE '%remote%') AS is_remote,
-    NULL::text                                   AS contract_type_raw,
+    s.contract_type_raw,
 
     /* pay */
     NULL::numeric                                AS salary_min,
@@ -64,23 +68,23 @@ norm AS (
     util.org_domain(util.url_host(COALESCE(s.job_url_direct_raw, s.job_url_fallback))) AS apply_root,
 
     /* company site: prefer direct, filter out aggregators/ATS for the *company* domain */
-    COALESCE(s.company_url_direct, s.company_url_fallback)     AS company_website_raw,
+    s.company_website_raw,
     CASE
-      WHEN util.is_aggregator_host(util.url_host(COALESCE(s.company_url_direct, s.company_url_fallback))) THEN NULL
-      WHEN util.is_ats_host(util.url_host(COALESCE(s.company_url_direct, s.company_url_fallback))) THEN NULL
-      ELSE COALESCE(s.company_url_direct, s.company_url_fallback)
+      WHEN util.is_aggregator_host(util.url_host(s.company_website_raw)) THEN NULL
+      WHEN util.is_ats_host(util.url_host(s.company_website_raw)) THEN NULL
+      ELSE s.company_website_raw
     END                                         AS company_website,
     CASE
-      WHEN util.is_aggregator_host(util.url_host(COALESCE(s.company_url_direct, s.company_url_fallback))) THEN NULL
-      WHEN util.is_ats_host(util.url_host(COALESCE(s.company_url_direct, s.company_url_fallback))) THEN NULL
-      ELSE util.org_domain(util.url_host(COALESCE(s.company_url_direct, s.company_url_fallback)))
+      WHEN util.is_aggregator_host(util.url_host(s.company_website_raw)) THEN NULL
+      WHEN util.is_ats_host(util.url_host(s.company_website_raw)) THEN NULL
+      ELSE util.org_domain(util.url_host(s.company_website_raw))
     END                                         AS company_domain,
 
     /* enrichment passthroughs (JobSpy raw often lacks these; keep NULL-safe) */
     NULL::text                                   AS company_size_raw,
-    NULL::text                                   AS company_industry_raw,
-    NULL::text                                   AS company_logo_url,
-    NULL::text                                   AS company_description_raw
+    s.company_industry_raw,
+    s.company_logo_url,
+    s.company_description_raw
   FROM src s
 )
 SELECT
@@ -92,6 +96,6 @@ SELECT
   salary_min, salary_max, currency,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
-  company_website, company_domain,
+  company_website_raw, company_website, company_domain,
   company_size_raw, company_industry_raw, company_logo_url, company_description_raw
 FROM norm;
