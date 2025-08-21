@@ -43,12 +43,24 @@ slugs AS (
     AND linkedin_url IS NOT NULL
 ),
 uniq_slugs AS (
-  SELECT DISTINCT name_norm, slug FROM slugs WHERE slug IS NOT NULL
+  SELECT
+    name_norm,
+    MIN(slug) AS slug,
+    ARRAY_AGG(DISTINCT slug ORDER BY slug) AS slugs
+  FROM slugs
+  WHERE slug IS NOT NULL
+  GROUP BY name_norm
+),
+updated AS (
+  UPDATE gold.company gc
+  SET linkedin_slug = us.slug
+  FROM uniq_slugs us
+  WHERE gc.name_norm = us.name_norm
+    AND gc.linkedin_slug IS DISTINCT FROM us.slug
+  RETURNING 1
 )
-UPDATE gold.company gc
-SET linkedin_slug = us.slug
-FROM uniq_slugs us
-WHERE gc.name_norm = us.name_norm
-  AND gc.linkedin_slug IS DISTINCT FROM us.slug;
+SELECT name_norm, slugs
+FROM uniq_slugs
+WHERE array_length(slugs, 1) > 1;
 
 COMMIT;
