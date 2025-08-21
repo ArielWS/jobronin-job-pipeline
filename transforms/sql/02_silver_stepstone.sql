@@ -60,6 +60,7 @@ fields AS (
     NULLIF(COALESCE(
       p.jd #>> '{company,website}',
       p.jd #>> '{company,homepage}',
+      p.jd #>> '{company_profile,website}',
       p.jd ->> 'company_website',
       p.jd ->> 'company_homepage',
       p.jd ->> 'companyWebsite',
@@ -71,10 +72,14 @@ fields AS (
     util.first_email(p.jd::text) AS email_found,
 
     -- Enrichment bits commonly present in StepStone payloads (best-effort)
-    COALESCE(p.jd #>> '{company,size}', p.jd ->> 'companySize')         AS company_size_raw,
-    COALESCE(p.jd #>> '{company,industry}', p.jd #>> '{industry,name}') AS company_industry_raw,
-    COALESCE(p.jd #>> '{company,logoUrl}', p.jd ->> 'companyLogoUrl')   AS company_logo_url,
+    COALESCE(p.jd #>> '{company,size}', p.jd ->> 'companySize', p.jd #>> '{company_profile,employees}') AS company_size_raw,
+    COALESCE(p.jd #>> '{company,industry}', p.jd #>> '{industry,name}', p.jd #>> '{company_profile,industries}') AS company_industry_raw,
+    COALESCE(p.jd #>> '{company,logoUrl}', p.jd ->> 'companyLogoUrl', p.jd #>> '{company_profile,logo_url}')   AS company_logo_url,
     COALESCE(p.jd ->> 'companyDescription', p.jd #>> '{company,description}') AS company_description_raw,
+    p.jd #>> '{company_profile,address}'      AS company_address_raw,
+    p.jd #>> '{company_profile,stepstone_id}' AS company_stepstone_id,
+    p.jd #>> '{company_profile,active_jobs}'  AS company_active_jobs,
+    p.jd #>> '{company_profile,hero_url}'     AS company_hero_url,
 
     -- Salary fields can appear in multiple shapes; coalesce common keys
     COALESCE(
@@ -201,7 +206,11 @@ norm AS (
     f.company_size_raw,
     f.company_industry_raw,
     f.company_logo_url,
-    f.company_description_raw
+    f.company_description_raw,
+    f.company_address_raw,
+    f.company_stepstone_id,
+    f.company_active_jobs,
+    f.company_hero_url
   FROM fields f
 ),
 -- Stronger junk filter:
@@ -228,5 +237,6 @@ SELECT
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
   company_website_raw, company_linkedin_url, company_website, company_domain,
-  company_size_raw, company_industry_raw, company_logo_url, company_description_raw
+  company_size_raw, company_industry_raw, company_logo_url, company_description_raw,
+  company_address_raw, company_stepstone_id, company_active_jobs, company_hero_url
 FROM keep;
