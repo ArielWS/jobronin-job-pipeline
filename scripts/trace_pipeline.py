@@ -8,6 +8,7 @@ from psycopg.rows import dict_row
 
 PIPELINE_FILES = [
     "transforms/sql/00_extensions.sql",
+    "transforms/sql/00_jobspy_raw.sql",
     "transforms/sql/04_util_functions.sql",
     "transforms/sql/01_silver_jobspy.sql",
     "transforms/sql/02_silver_profesia_sk.sql",
