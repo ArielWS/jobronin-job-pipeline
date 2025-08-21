@@ -14,7 +14,7 @@ WITH src AS (
     util.org_domain(s.company_domain)                  AS site_root_raw,
     s.company_description_raw                          AS company_description_raw,
     CASE
-      WHEN s.company_size_raw ~ '\\d'
+      WHEN s.company_size_raw ~ '\d'
         THEN btrim(s.company_size_raw)
     END AS company_size_raw,
     s.company_industry_raw                             AS company_industry_raw,
