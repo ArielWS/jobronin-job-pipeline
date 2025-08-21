@@ -5,28 +5,28 @@
 BEGIN;
 
 WITH linkedin_sources AS (
-  -- JobSpy raw table
+  -- JobSpy silver view
   SELECT
-    js.company               AS company_name,
-    COALESCE(js.company_url_direct, js.company_url) AS linkedin_url
-  FROM public.jobspy_job_scrape js
-  WHERE COALESCE(js.company_url_direct, js.company_url) ILIKE '%linkedin.com/company/%'
+    js.company_name        AS company_name,
+    COALESCE(js.company_linkedin_url, js.company_website) AS linkedin_url
+  FROM silver.jobspy js
+  WHERE COALESCE(js.company_linkedin_url, js.company_website) ILIKE '%linkedin.com/company/%'
 
   UNION ALL
   -- StepStone silver view
   SELECT
     ss.company_name        AS company_name,
-    ss.company_website     AS linkedin_url
+    COALESCE(ss.company_linkedin_url, ss.company_website) AS linkedin_url
   FROM silver.stepstone ss
-  WHERE ss.company_website ILIKE '%linkedin.com/company/%'
+  WHERE COALESCE(ss.company_linkedin_url, ss.company_website) ILIKE '%linkedin.com/company/%'
 
   UNION ALL
   -- Profesia.sk silver view
   SELECT
     pk.company_name          AS company_name,
-    pk.company_website       AS linkedin_url
+    COALESCE(pk.company_linkedin_url, pk.company_website) AS linkedin_url
   FROM silver.profesia_sk pk
-  WHERE pk.company_website ILIKE '%linkedin.com/company/%'
+  WHERE COALESCE(pk.company_linkedin_url, pk.company_website) ILIKE '%linkedin.com/company/%'
 ),
 slugs AS (
   SELECT

@@ -36,7 +36,7 @@ SELECT
 
   apply_domain,
   apply_root,
-
+  company_linkedin_url,
   company_website,
   company_domain,
 
@@ -78,7 +78,7 @@ SELECT
 
   apply_domain,
   apply_root,
-
+  company_linkedin_url,
   company_website,
   company_domain,
 
@@ -120,7 +120,7 @@ SELECT
 
   apply_domain,
   apply_root,
-
+  company_linkedin_url,
   company_website,
   company_domain,
 

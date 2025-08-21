@@ -70,6 +70,10 @@ norm AS (
     /* company site: prefer direct, filter out aggregators/ATS for the *company* domain */
     s.company_website_raw,
     CASE
+      WHEN util.url_host(s.company_website_raw) = 'linkedin.com' THEN s.company_website_raw
+      ELSE NULL
+    END                                         AS company_linkedin_url,
+    CASE
       WHEN util.is_aggregator_host(util.url_host(s.company_website_raw)) THEN NULL
       WHEN util.is_ats_host(util.url_host(s.company_website_raw)) THEN NULL
       ELSE s.company_website_raw
@@ -96,6 +100,6 @@ SELECT
   salary_min, salary_max, currency,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
-  company_website_raw, company_website, company_domain,
+  company_website_raw, company_linkedin_url, company_website, company_domain,
   company_size_raw, company_industry_raw, company_logo_url, company_description_raw
 FROM norm;

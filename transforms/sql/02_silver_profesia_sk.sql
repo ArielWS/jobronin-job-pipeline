@@ -57,7 +57,7 @@ fields AS (
     -- Emails
     util.first_email(jd::text)                AS emails_raw,
     -- Company website
-    jd->>'company_url'                        AS company_url_raw,
+    jd->>'company_url'                        AS company_website_raw,
     -- Date
     COALESCE(jd->>'date_posted', jd->>'posted_at') AS date_posted_raw,
     -- Optional enrichment fields
@@ -107,15 +107,20 @@ norm AS (
     util.org_domain(util.email_domain(f.emails_raw)) AS contact_email_root,
     util.url_host(f.job_url_direct)           AS apply_domain,
     util.org_domain(util.url_host(f.job_url_direct)) AS apply_root,
+    f.company_website_raw,
     CASE
-      WHEN util.is_aggregator_host(util.url_host(f.company_url_raw)) THEN NULL
-      WHEN util.is_ats_host(util.url_host(f.company_url_raw))        THEN NULL
-      ELSE f.company_url_raw
+      WHEN util.url_host(f.company_website_raw) = 'linkedin.com' THEN f.company_website_raw
+      ELSE NULL
+    END                                       AS company_linkedin_url,
+    CASE
+      WHEN util.is_aggregator_host(util.url_host(f.company_website_raw)) THEN NULL
+      WHEN util.is_ats_host(util.url_host(f.company_website_raw))        THEN NULL
+      ELSE f.company_website_raw
     END                                       AS company_website,
     CASE
-      WHEN util.is_aggregator_host(util.url_host(f.company_url_raw)) THEN NULL
-      WHEN util.is_ats_host(util.url_host(f.company_url_raw))        THEN NULL
-      ELSE util.org_domain(util.url_host(f.company_url_raw))
+      WHEN util.is_aggregator_host(util.url_host(f.company_website_raw)) THEN NULL
+      WHEN util.is_ats_host(util.url_host(f.company_website_raw))        THEN NULL
+      ELSE util.org_domain(util.url_host(f.company_website_raw))
     END                                       AS company_domain,
     f.company_size_raw,
     f.company_industry_raw,
@@ -143,6 +148,6 @@ SELECT
   salary_min, salary_max, currency,
   emails_raw, contact_email_domain, contact_email_root,
   apply_domain, apply_root,
-  company_website, company_domain,
+  company_website_raw, company_linkedin_url, company_website, company_domain,
   company_size_raw, company_industry_raw, company_logo_url, company_description_raw
 FROM keep;
