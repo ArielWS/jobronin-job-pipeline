@@ -1,5 +1,5 @@
 -- transforms/sql/12a_company_evidence.sql
--- Write domain/email/apply evidence per company using only cleaned silver.unified fields.
+-- Write domain/email evidence per company using only cleaned silver.unified fields.
 -- NO JSON parsing here.
 
 BEGIN;
@@ -13,8 +13,7 @@ WITH src AS (
     util.company_name_norm(s.company_name) AS name_norm,
     -- candidates (already cleaned in silver)
     util.org_domain(NULLIF(s.company_domain,'')) AS site_root_raw,
-    CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL ELSE s.contact_email_root END AS email_root_raw,
-    NULLIF(s.apply_root,'') AS apply_root_raw
+    CASE WHEN util.is_generic_email_domain(s.contact_email_root) THEN NULL ELSE s.contact_email_root END AS email_root_raw
   FROM silver.unified s
   WHERE s.company_name IS NOT NULL
     AND btrim(s.company_name) <> ''
@@ -60,13 +59,6 @@ evidence_rows AS (
     AND r.email_root_raw IS NOT NULL
     AND NOT util.is_generic_email_domain(r.email_root_raw)
 
-  UNION ALL
-  SELECT r.company_id, 'apply', r.apply_root_raw, r.source, r.source_id
-  FROM resolved r
-  WHERE r.company_id IS NOT NULL
-    AND r.apply_root_raw IS NOT NULL
-    AND NOT util.is_aggregator_host(r.apply_root_raw)
-    AND NOT util.is_ats_host(r.apply_root_raw)
 )
 
 INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)

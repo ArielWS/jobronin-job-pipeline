@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS gold.company_alias (
 -- Evidence (per-company primary key recommended)
 CREATE TABLE IF NOT EXISTS gold.company_evidence_domain (
   company_id BIGINT NOT NULL REFERENCES gold.company(company_id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL,  -- 'website' | 'email' | 'apply' | 'ats_handle'
+  kind       TEXT NOT NULL,  -- 'website' | 'email' | 'ats_handle'
   value      TEXT NOT NULL,  -- host or handle (store org roots for website/email)
   source     TEXT,           -- jobspy/stepstone/etc
   source_id  TEXT,
