@@ -49,6 +49,10 @@ best_per_name AS (
     ROW_NUMBER() OVER (
       PARTITION BY s.name_norm
       ORDER BY
+        (s.company_description_raw IS NOT NULL
+         OR s.company_size_raw IS NOT NULL
+         OR s.company_industry_raw IS NOT NULL
+         OR s.company_logo_url IS NOT NULL) DESC,
         (s.site_root_raw IS NOT NULL
          AND NOT util.is_aggregator_host(s.site_root_raw)
          AND NOT util.is_ats_host(s.site_root_raw)
@@ -62,19 +66,27 @@ profile_agg AS (
     s.name_norm,
     FIRST_VALUE(s.company_description_raw) OVER (
       PARTITION BY s.name_norm
-      ORDER BY (s.company_description_raw IS NULL), length(coalesce(s.company_description_raw, '')) DESC
+      ORDER BY (s.company_description_raw IS NULL),
+               (s.site_root_raw IS NULL),
+               length(coalesce(s.company_description_raw, '')) DESC
     ) AS company_description_raw,
     FIRST_VALUE(s.company_size_raw) OVER (
       PARTITION BY s.name_norm
-      ORDER BY (s.company_size_raw IS NULL), length(coalesce(s.company_size_raw, '')) DESC
+      ORDER BY (s.company_size_raw IS NULL),
+               (s.site_root_raw IS NULL),
+               length(coalesce(s.company_size_raw, '')) DESC
     ) AS company_size_raw,
     FIRST_VALUE(s.company_industry_raw) OVER (
       PARTITION BY s.name_norm
-      ORDER BY (s.company_industry_raw IS NULL), length(coalesce(s.company_industry_raw, '')) DESC
+      ORDER BY (s.company_industry_raw IS NULL),
+               (s.site_root_raw IS NULL),
+               length(coalesce(s.company_industry_raw, '')) DESC
     ) AS company_industry_raw,
     FIRST_VALUE(s.company_logo_url) OVER (
       PARTITION BY s.name_norm
-      ORDER BY (s.company_logo_url IS NULL), length(coalesce(s.company_logo_url, '')) DESC
+      ORDER BY (s.company_logo_url IS NULL),
+               (s.site_root_raw IS NULL),
+               length(coalesce(s.company_logo_url, '')) DESC
     ) AS company_logo_url
   FROM src s
 ),
