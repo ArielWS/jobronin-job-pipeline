@@ -14,8 +14,7 @@ SELECT
 
   company_raw,
   company_name,
-
-  NULL::text AS description_raw,
+  description_raw,
 
   location_raw,
   job_location_raw,

@@ -13,11 +13,11 @@ agg AS (
     -- pick a currency: prefer any non-null (short string), fall back to first by length desc
     substring(string_agg(coalesce(u.currency,''), '' ORDER BY length(coalesce(u.currency,'')) DESC) from 1 for 3) AS best_currency,
     -- longest description as proxy for richest content
-    (SELECT u2.description_raw
+    (SELECT NULLIF(u2.description_raw,'')
      FROM unified u2
      JOIN gold.job_source_link gsl2 ON gsl2.source = u2.source AND gsl2.source_id = u2.source_id
      WHERE gsl2.job_id = gsl.job_id
-     ORDER BY length(coalesce(u2.description_raw,'')) DESC NULLS LAST
+     ORDER BY length(NULLIF(u2.description_raw,'')) DESC NULLS LAST
      LIMIT 1) AS best_description
   FROM gold.job_source_link gsl
   JOIN unified u
