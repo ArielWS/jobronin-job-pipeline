@@ -94,6 +94,7 @@ fields AS (
     COALESCE(p.jd #>> '{company,industry}', p.jd #>> '{industry,name}', p.jd #>> '{company_profile,industries}') AS company_industry_raw,
     COALESCE(p.jd #>> '{company,logoUrl}', p.jd ->> 'companyLogoUrl', p.jd #>> '{company_profile,logo_url}')   AS company_logo_url,
     COALESCE(p.jd ->> 'companyDescription', p.jd #>> '{company,description}') AS company_description_raw,
+    p.jd #>> '{company_profile,address}'      AS company_location_raw,
     p.jd #>> '{company_profile,address}'      AS company_address_raw,
     p.jd #>> '{company_profile,stepstone_id}' AS company_stepstone_id,
     p.jd #>> '{company_profile,active_jobs}'  AS company_active_jobs,
@@ -277,6 +278,7 @@ norm AS (
     f.company_industry_raw,
     f.company_logo_url,
     f.company_description_raw,
+    f.company_location_raw,
     f.company_address_raw,
     f.company_stepstone_id,
     f.company_active_jobs,
@@ -308,5 +310,5 @@ keep AS (
   apply_domain, apply_root,
   company_website_raw, company_linkedin_url, company_website, company_domain,
   company_size_raw, company_industry_raw, company_logo_url, company_description_raw,
-  company_address_raw, company_stepstone_id, company_active_jobs, company_hero_url
+  company_location_raw, company_address_raw, company_stepstone_id, company_active_jobs, company_hero_url
 FROM keep;
