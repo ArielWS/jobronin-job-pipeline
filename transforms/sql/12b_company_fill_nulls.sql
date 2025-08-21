@@ -1,55 +1,26 @@
+-- transforms/sql/12b_company_fill_nulls.sql
+-- Legacy backfill for profile fields; can be removed once existing rows are migrated.
 BEGIN;
 
-WITH c AS (
-  SELECT company_id, website_domain, name_norm
-  FROM gold.company
-),
-su AS (
+UPDATE gold.company gc
+SET description  = COALESCE(gc.description,  su.company_description_raw),
+    size_raw     = COALESCE(gc.size_raw,     su.company_size_raw),
+    industry_raw = COALESCE(gc.industry_raw, su.company_industry_raw),
+    logo_url     = COALESCE(gc.logo_url,     su.company_logo_url)
+FROM (
   SELECT
     util.org_domain(NULLIF(company_domain,'')) AS org_root,
     util.company_name_norm(company_name)       AS name_norm,
-    company_description_raw, company_size_raw, company_industry_raw, company_logo_url,
-    date_posted
+    company_description_raw,
+    company_size_raw,
+    company_industry_raw,
+    company_logo_url
   FROM silver.unified
-),
-donor_domain AS (
-  SELECT c.company_id, s.*
-  FROM c
-  JOIN su s
-    ON c.website_domain IS NOT NULL
-   AND s.org_root IS NOT NULL
-   AND util.same_org_domain(c.website_domain, s.org_root)
-),
-donor_name AS (
-  SELECT c.company_id, s.*
-  FROM c
-  JOIN su s
-    ON c.website_domain IS NULL
-   AND c.name_norm IS NOT NULL
-   AND s.name_norm = c.name_norm
-),
-donor AS (
-  SELECT * FROM donor_domain
-  UNION ALL
-  SELECT * FROM donor_name
-),
-best AS (
-  SELECT DISTINCT ON (company_id)
-    company_id, company_description_raw, company_size_raw, company_industry_raw, company_logo_url
-  FROM donor
-  ORDER BY company_id,
-           (company_description_raw IS NOT NULL) DESC,
-           (company_size_raw IS NOT NULL) DESC,
-           (company_industry_raw IS NOT NULL) DESC,
-           (company_logo_url IS NOT NULL) DESC,
-           date_posted DESC NULLS LAST
-)
-UPDATE gold.company gc
-SET description  = COALESCE(gc.description,  b.company_description_raw),
-    size_raw     = COALESCE(gc.size_raw,     b.company_size_raw),
-    industry_raw = COALESCE(gc.industry_raw, b.company_industry_raw),
-    logo_url     = COALESCE(gc.logo_url,     b.company_logo_url)
-FROM best b
-WHERE gc.company_id = b.company_id;
+) su
+WHERE (gc.description IS NULL OR gc.size_raw IS NULL OR gc.industry_raw IS NULL OR gc.logo_url IS NULL)
+  AND (
+    (gc.website_domain IS NOT NULL AND su.org_root IS NOT NULL AND util.same_org_domain(gc.website_domain, su.org_root))
+    OR (gc.website_domain IS NULL AND gc.name_norm = su.name_norm)
+  );
 
 COMMIT;

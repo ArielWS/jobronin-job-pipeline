@@ -12,6 +12,10 @@ WITH src AS (
     s.company_name                                     AS company_name,
     util.company_name_norm_langless(s.company_name)    AS name_norm,
     util.org_domain(s.company_domain)                  AS site_root_raw,
+    s.company_description_raw                          AS company_description_raw,
+    s.company_size_raw                                 AS company_size_raw,
+    s.company_industry_raw                             AS company_industry_raw,
+    s.company_logo_url                                 AS company_logo_url,
     CASE
       WHEN s.contact_email_root IS NOT NULL
            AND NOT util.is_generic_email_domain(s.contact_email_root)
@@ -67,8 +71,14 @@ best_per_name_brand AS (
 
 -- ---------------  Insert names (no updates here) ---------------
 ins_names AS (
-  INSERT INTO gold.company AS gc (name, brand_key)
-  SELECT b.company_name, b.brand_key_norm
+  INSERT INTO gold.company AS gc (name, brand_key, description, size_raw, industry_raw, logo_url)
+  SELECT
+    b.company_name,
+    b.brand_key_norm,
+    b.company_description_raw,
+    b.company_size_raw,
+    b.company_industry_raw,
+    b.company_logo_url
   FROM best_per_name_brand b
   ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO NOTHING
   RETURNING gc.company_id, gc.name_norm
@@ -91,6 +101,16 @@ upd_domain AS (
   WHERE dw.rnk = 1
     AND gc.name_norm = dw.name_norm
     AND dw.org_root IS NOT NULL
+  RETURNING 1
+),
+upd_details AS (
+  UPDATE gold.company gc
+  SET description  = COALESCE(gc.description,  b.company_description_raw),
+      size_raw     = COALESCE(gc.size_raw,     b.company_size_raw),
+      industry_raw = COALESCE(gc.industry_raw, b.company_industry_raw),
+      logo_url     = COALESCE(gc.logo_url,     b.company_logo_url)
+  FROM best_per_name_brand b
+  WHERE gc.name_norm = b.name_norm
   RETURNING 1
 ),
 
