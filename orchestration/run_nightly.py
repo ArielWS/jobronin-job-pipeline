@@ -12,7 +12,6 @@ FILES = [
     "transforms/sql/12a_companies_upsert.sql",
     "transforms/sql/12a_company_evidence.sql",
     "transforms/sql/12e_company_promote_domain.sql",
-    "transforms/sql/12b_company_fill_nulls.sql",
     "transforms/sql/12c_company_domain_from_evidence.sql",
 ]
 

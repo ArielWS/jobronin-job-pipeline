@@ -54,6 +54,27 @@ best_per_name AS (
     ) AS rn
   FROM src s
 ),
+profile_agg AS (
+  SELECT DISTINCT
+    s.name_norm,
+    FIRST_VALUE(s.company_description_raw) OVER (
+      PARTITION BY s.name_norm
+      ORDER BY (s.company_description_raw IS NULL), length(coalesce(s.company_description_raw, '')) DESC
+    ) AS company_description_raw,
+    FIRST_VALUE(s.company_size_raw) OVER (
+      PARTITION BY s.name_norm
+      ORDER BY (s.company_size_raw IS NULL), length(coalesce(s.company_size_raw, '')) DESC
+    ) AS company_size_raw,
+    FIRST_VALUE(s.company_industry_raw) OVER (
+      PARTITION BY s.name_norm
+      ORDER BY (s.company_industry_raw IS NULL), length(coalesce(s.company_industry_raw, '')) DESC
+    ) AS company_industry_raw,
+    FIRST_VALUE(s.company_logo_url) OVER (
+      PARTITION BY s.name_norm
+      ORDER BY (s.company_logo_url IS NULL), length(coalesce(s.company_logo_url, '')) DESC
+    ) AS company_logo_url
+  FROM src s
+),
 best_per_name_brand AS (
   SELECT
     b.*,
@@ -75,11 +96,12 @@ ins_names AS (
   SELECT
     b.company_name,
     b.brand_key_norm,
-    b.company_description_raw,
-    b.company_size_raw,
-    b.company_industry_raw,
-    b.company_logo_url
+    p.company_description_raw,
+    p.company_size_raw,
+    p.company_industry_raw,
+    p.company_logo_url
   FROM best_per_name_brand b
+  JOIN profile_agg p ON p.name_norm = b.name_norm
   ON CONFLICT ON CONSTRAINT company_name_norm_uniq DO NOTHING
   RETURNING gc.company_id, gc.name_norm
 ),
@@ -105,12 +127,12 @@ upd_domain AS (
 ),
 upd_details AS (
   UPDATE gold.company gc
-  SET description  = COALESCE(gc.description,  b.company_description_raw),
-      size_raw     = COALESCE(gc.size_raw,     b.company_size_raw),
-      industry_raw = COALESCE(gc.industry_raw, b.company_industry_raw),
-      logo_url     = COALESCE(gc.logo_url,     b.company_logo_url)
-  FROM best_per_name_brand b
-  WHERE gc.name_norm = b.name_norm
+  SET description  = COALESCE(gc.description,  p.company_description_raw),
+      size_raw     = COALESCE(gc.size_raw,     p.company_size_raw),
+      industry_raw = COALESCE(gc.industry_raw, p.company_industry_raw),
+      logo_url     = COALESCE(gc.logo_url,     p.company_logo_url)
+  FROM profile_agg p
+  WHERE gc.name_norm = p.name_norm
   RETURNING 1
 ),
 

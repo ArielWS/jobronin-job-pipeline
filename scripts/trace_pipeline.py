@@ -20,7 +20,6 @@ PIPELINE_FILES = [
     "transforms/sql/12e_company_promote_domain.sql",
     "transforms/sql/12c_company_domain_from_evidence.sql",
     "transforms/sql/12f_company_linkedin.sql",
-    "transforms/sql/12b_company_fill_nulls.sql",
     "transforms/sql/12d_company_monitoring_checks.sql",
 ]
 
@@ -133,7 +132,6 @@ def main() -> None:
                     file.endswith("12e_company_promote_domain.sql")
                     or file.endswith("12c_company_domain_from_evidence.sql")
                     or file.endswith("12f_company_linkedin.sql")
-                    or file.endswith("12b_company_fill_nulls.sql")
                 ) and ctx.get("company_id"):
                     fetches.append(
                         run_fetch(
