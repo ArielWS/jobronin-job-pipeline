@@ -18,8 +18,9 @@ WITH jobspy_rows AS (
     -- URLs & hosts (JobSpy: derive from source_row_url)
     j.source_row_url::text                           AS job_url_raw,
     util.url_canonical(j.source_row_url)             AS job_url_canonical,
-    (regexp_match(COALESCE(util.url_canonical(j.source_row_url), ''), '/jobs/view/([0-9]+)'))[1]
-                                                     AS linkedin_job_id,
+    (regexp_match(
+       COALESCE(util.url_canonical(j.source_row_url), ''),
+       '/jobs/view/([0-9]+)'))[1]                    AS linkedin_job_id,
     j.source_row_url::text                           AS apply_url_raw,
     util.url_canonical(j.source_row_url)             AS apply_url_canonical,
     util.url_host(util.url_canonical(j.source_row_url))                 AS apply_domain,
@@ -39,11 +40,11 @@ WITH jobspy_rows AS (
     j.company_linkedin_url::text                     AS company_linkedin_url,
     j.company_website::text                          AS company_website,
     j.company_domain::text                           AS company_domain,
-    j.company_description_raw::text                  AS company_description_raw,
-    j.company_size_raw::text                         AS company_size_raw,
-    j.company_industry_raw::text                     AS company_industry_raw,
-    j.company_logo_url::text                         AS company_logo_url,
-    j.company_location_raw::text                     AS company_location_raw,
+    NULL::text                                       AS company_description_raw,
+    NULL::text                                       AS company_size_raw,
+    NULL::text                                       AS company_industry_raw,
+    NULL::text                                       AS company_logo_url,
+    NULL::text                                       AS company_location_raw,
     NULL::text                                       AS company_address_raw,
     NULL::text                                       AS company_stepstone_id,
     NULL::int                                        AS company_active_jobs,
@@ -56,7 +57,7 @@ WITH jobspy_rows AS (
     j.region_guess::text                             AS region_guess,
     j.country_guess::text                            AS country_guess,
 
-    -- Job meta
+    -- Job meta (JobSpy exposes a subset; others NULL)
     j.contract_type_raw::text                        AS contract_type_raw,
     NULL::text                                       AS work_type_raw,
     NULL::text                                       AS job_type_raw,
