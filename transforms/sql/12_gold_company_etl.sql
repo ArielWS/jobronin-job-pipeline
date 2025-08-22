@@ -114,7 +114,9 @@ ins_domain AS (
     w.company_industry_raw,
     w.company_logo_url
   FROM root_winners w
-  ON CONFLICT (website_domain, brand_key) DO NOTHING
+  -- NOTE: partial unique indexes can't be inferred by column list here;
+  -- use target-less ON CONFLICT so any unique violation is ignored.
+  ON CONFLICT DO NOTHING
   RETURNING gc.company_id, gc.name_norm, gc.website_domain
 ),
 
