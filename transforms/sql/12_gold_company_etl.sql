@@ -1,6 +1,6 @@
 -- transforms/sql/12_gold_company_etl.sql
--- Gold ETL: domain-first → LinkedIn-second → StepStoneID → name+geo → name-last.
--- Plus cohort-best survivorship and safe merges (including slug+placeholder collapse).
+-- Gold ETL: domain-first → LinkedIn-second → StepStoneID → family-anchor → name+geo → name-last.
+-- Plus cohort-best survivorship and safe merges (including slug+placeholder and family collapse).
 -- Source: silver.unified_silver
 
 BEGIN;
@@ -11,7 +11,7 @@ SET brand_key = NULL
 WHERE brand_key = '';
 
 -- ---------------------------------------------------------------------------
--- Source snapshot (+ derived org_root, linkedin_slug, stepstone_id, geo)
+-- Source snapshot (+ derived org_root, linkedin_slug, stepstone_id, geo, family)
 -- ---------------------------------------------------------------------------
 WITH src AS (
   SELECT DISTINCT
@@ -20,6 +20,7 @@ WITH src AS (
     s.source_row_url                                    AS source_row_url,
     s.company_raw                                       AS company_name,
     util.company_name_norm_langless(s.company_raw)      AS name_norm,
+    util.company_name_family_key(s.company_raw)         AS family_key,
     lower(util.org_domain(NULLIF(s.company_domain,''))) AS site_root_raw,
     s.company_description_raw                           AS company_description_raw,
     CASE WHEN s.company_size_raw ~ '\d' THEN btrim(s.company_size_raw) END AS company_size_raw,
@@ -114,7 +115,6 @@ ins_domain AS (
     w.company_industry_raw,
     w.company_logo_url
   FROM root_winners w
-  -- partial unique indexes can't be targeted reliably; ignore any conflict
   ON CONFLICT DO NOTHING
   RETURNING gc.company_id, gc.name_norm, gc.website_domain
 ),
@@ -151,7 +151,7 @@ ins_linkedin AS (
   RETURNING gc.company_id, gc.name_norm
 ),
 
--- Anchored mapping (current run): rows that can already map by domain or slug
+-- Current anchors in gold
 domain_map AS (
   SELECT gc.website_domain, gc.company_id
   FROM gold.company gc
@@ -162,6 +162,35 @@ slug_map AS (
   FROM gold.company gc
   WHERE gc.linkedin_slug IS NOT NULL
 ),
+
+-- FAMILY ANCHOR: one and only one domain owner per family_key
+family_anchor_domain AS (
+  SELECT fk.family_key, MIN(gc.company_id) AS company_id
+  FROM (
+    SELECT DISTINCT util.company_name_family_key(name) AS family_key, company_id
+    FROM gold.company
+    WHERE website_domain IS NOT NULL
+  ) gc
+  JOIN LATERAL (SELECT gc.family_key) fk ON TRUE
+  WHERE fk.family_key IS NOT NULL
+  GROUP BY fk.family_key
+  HAVING COUNT(*) = 1
+),
+
+-- STEPSTONE COHORT ANCHOR: if any member has an anchor, reuse it
+stepstone_anchor AS (
+  SELECT
+    s.stepstone_id,
+    COALESCE(dm.company_id, sm.company_id) AS anchor_company_id
+  FROM src s
+  LEFT JOIN rooted r ON r.source = s.source AND r.source_id = s.source_id
+  LEFT JOIN domain_map dm ON dm.website_domain = r.org_root
+  LEFT JOIN slug_map   sm ON sm.slug = r.linkedin_slug
+  WHERE s.stepstone_id IS NOT NULL
+    AND (dm.company_id IS NOT NULL OR sm.company_id IS NOT NULL)
+),
+
+-- Name+geo anchored map (same name_norm AND same geo as an anchored row)
 anchored_resolved AS (
   SELECT
     r.name_norm,
@@ -177,7 +206,7 @@ anchored_resolved AS (
 resolved AS (
   SELECT
     s.source, s.source_id, s.source_row_url,
-    s.company_name, s.name_norm,
+    s.company_name, s.name_norm, s.family_key,
     s.email_root_raw,
     s.org_root AS org_root_candidate,
     s.linkedin_slug,
@@ -197,14 +226,17 @@ resolved AS (
         WHERE s.linkedin_slug IS NOT NULL
           AND lower(gc.linkedin_slug) = s.linkedin_slug
         LIMIT 1),
-      -- (3) by stepstone id evidence
-      (SELECT ced.company_id
-         FROM gold.company_evidence_domain ced
-        WHERE s.stepstone_id IS NOT NULL
-          AND ced.kind = 'stepstone_id'
-          AND lower(ced.value) = lower(s.stepstone_id)
+      -- (3) by StepStone cohort anchor
+      (SELECT sa.anchor_company_id
+         FROM stepstone_anchor sa
+        WHERE sa.stepstone_id = s.stepstone_id
         LIMIT 1),
-      -- (4) by name + geo to an anchored company (unique candidate)
+      -- (4) by unique family-domain anchor
+      (SELECT fad.company_id
+         FROM family_anchor_domain fad
+        WHERE fad.family_key = s.family_key
+        LIMIT 1),
+      -- (5) by name + geo to an anchored company (unique candidate)
       (SELECT ar.company_id
          FROM anchored_resolved ar
         WHERE ar.name_norm = s.name_norm
@@ -216,7 +248,7 @@ resolved AS (
         GROUP BY ar.company_id
         HAVING COUNT(*) >= 1
         LIMIT 1),
-      -- (5) by name_norm (prefer those with domain)
+      -- (6) by name_norm (prefer those with domain)
       (SELECT gc2.company_id
          FROM gold.company gc2
         WHERE gc2.name_norm = s.name_norm
@@ -406,7 +438,7 @@ WHERE w.company_id = gc.company_id
           AND COALESCE(c2.brand_key,'') = COALESCE(gc.brand_key,'')
       );
 
--- 8) Aliases
+-- 8) Aliases (map visible source names to resolved companies)
 WITH map AS (
   SELECT
     s.company_raw AS company_name,
@@ -432,7 +464,9 @@ FROM map
 WHERE company_id IS NOT NULL
 ON CONFLICT (company_id, alias_norm) DO NOTHING;
 
--- 9) Cleanup merges (slug placeholders → domain twin, then pure placeholders → domain twin)
+-- 9) Cleanup merges
+
+-- 9a) slug placeholders → unique domain twin (same name_norm)
 WITH twins_slug AS (
   SELECT p.company_id AS placeholder_id, d.company_id AS domain_id
   FROM gold.company p
@@ -477,6 +511,7 @@ DELETE FROM gold.company c
 USING twins_slug t
 WHERE c.company_id = t.placeholder_id;
 
+-- 9b) pure placeholders → domain twin (same name_norm)
 WITH twins AS (
   SELECT a.company_id AS placeholder_id, b.company_id AS domain_id
   FROM gold.company a
@@ -506,6 +541,41 @@ moved_evidence AS (
 DELETE FROM gold.company c
 USING twins t
 WHERE c.company_id = t.placeholder_id;
+
+-- 9c) FAMILY placeholders → unique family domain anchor (handles "adesso SE" vs "adesso.de")
+WITH fam_anchor AS (
+  SELECT util.company_name_family_key(name) AS family_key, MIN(company_id) AS domain_id
+  FROM gold.company
+  WHERE website_domain IS NOT NULL
+  GROUP BY 1
+  HAVING family_key IS NOT NULL AND COUNT(*) = 1
+),
+fam_twins AS (
+  SELECT p.company_id AS placeholder_id, fa.domain_id
+  FROM gold.company p
+  JOIN fam_anchor fa
+    ON util.company_name_family_key(p.name) = fa.family_key
+  WHERE p.website_domain IS NULL
+),
+fam_aliases AS (
+  INSERT INTO gold.company_alias (company_id, alias)
+  SELECT ft.domain_id, ca.alias
+  FROM fam_twins ft
+  JOIN gold.company_alias ca ON ca.company_id = ft.placeholder_id
+  ON CONFLICT (company_id, alias_norm) DO NOTHING
+  RETURNING 1
+),
+fam_evidence AS (
+  INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
+  SELECT ft.domain_id, ce.kind, ce.value, ce.source, ce.source_id
+  FROM fam_twins ft
+  JOIN gold.company_evidence_domain ce ON ce.company_id = ft.placeholder_id
+  ON CONFLICT (company_id, kind, value) DO NOTHING
+  RETURNING 1
+)
+DELETE FROM gold.company c
+USING fam_twins ft
+WHERE c.company_id = ft.placeholder_id;
 
 -- 10) FINAL SAFETY NET:
 -- Collapse any remaining duplicates per name_norm where ALL rows lack a website_domain.
