@@ -309,4 +309,109 @@ WHERE w.company_id = gc.company_id
   AND NOT util.is_ats_host(w.value)
   AND NOT util.is_career_host(w.value)
   AND NOT EXISTS (
-        SEL
+        SELECT 1
+        FROM gold.company c2
+        WHERE c2.company_id <> gc.company_id
+          AND c2.website_domain = lower(w.value)
+          AND COALESCE(c2.brand_key,'') = COALESCE(gc.brand_key,'')
+      );
+
+--------------------------------------------------------------------------------
+-- 4) Aliases from unified_silver using same_org_domain for direct matches
+--------------------------------------------------------------------------------
+WITH map AS (
+  SELECT
+    s.company_raw AS company_name,
+    COALESCE(gc.company_id, gc2.company_id, gc3.company_id) AS company_id
+  FROM silver.unified_silver s
+  LEFT JOIN gold.company gc
+    ON s.company_domain IS NOT NULL
+   AND util.same_org_domain(gc.website_domain, s.company_domain)
+  LEFT JOIN gold.company gc2
+    ON gc.company_id IS NULL
+   AND s.contact_email_root IS NOT NULL
+   AND NOT util.is_generic_email_domain(s.contact_email_root)
+   AND util.company_name_norm(gc2.name) = util.company_name_norm(s.company_raw)
+  LEFT JOIN gold.company gc3
+    ON gc.company_id IS NULL
+   AND gc2.company_id IS NULL
+   AND util.company_name_norm(gc3.name) = util.company_name_norm(s.company_raw)
+  WHERE s.company_raw IS NOT NULL AND btrim(s.company_raw) <> ''
+)
+INSERT INTO gold.company_alias (company_id, alias)
+SELECT DISTINCT company_id, company_name
+FROM map
+WHERE company_id IS NOT NULL
+ON CONFLICT (company_id, alias_norm) DO NOTHING;
+
+--------------------------------------------------------------------------------
+-- 5) LinkedIn company slug extraction from unified_silver
+--------------------------------------------------------------------------------
+WITH linkedin_sources AS (
+  SELECT
+    util.company_name_norm(s.company_raw) AS name_norm,
+    COALESCE(s.company_linkedin_url, s.company_website) AS linkedin_url
+  FROM silver.unified_silver s
+  WHERE COALESCE(s.company_linkedin_url, s.company_website) ILIKE '%linkedin.com/company/%'
+),
+slugs AS (
+  SELECT
+    name_norm,
+    lower(
+      regexp_replace(
+        linkedin_url,
+        E'^https?://[^/]*linkedin\\.com/company/([^/?#]+).*',
+        E'\\1'
+      )
+    ) AS slug
+  FROM linkedin_sources
+  WHERE name_norm IS NOT NULL
+    AND linkedin_url IS NOT NULL
+),
+uniq_slugs AS (
+  SELECT
+    name_norm,
+    MIN(slug) AS slug
+  FROM slugs
+  WHERE slug IS NOT NULL
+  GROUP BY name_norm
+)
+UPDATE gold.company gc
+SET linkedin_slug = us.slug
+FROM uniq_slugs us
+WHERE gc.name_norm = us.name_norm
+  AND gc.linkedin_slug IS DISTINCT FROM us.slug;
+
+--------------------------------------------------------------------------------
+-- 6) Cleanup: merge placeholders (NULL domain) into the domain-resolved twin
+--------------------------------------------------------------------------------
+WITH twins AS (
+  SELECT a.company_id AS placeholder_id, b.company_id AS domain_id
+  FROM gold.company a
+  JOIN gold.company b
+    ON a.name_norm = b.name_norm
+   AND a.company_id <> b.company_id
+   AND a.website_domain IS NULL
+   AND b.website_domain IS NOT NULL
+),
+moved_aliases AS (
+  INSERT INTO gold.company_alias (company_id, alias)
+  SELECT t.domain_id, ca.alias
+  FROM twins t
+  JOIN gold.company_alias ca ON ca.company_id = t.placeholder_id
+  ON CONFLICT (company_id, alias_norm) DO NOTHING
+  RETURNING 1
+),
+moved_evidence AS (
+  INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
+  SELECT t.domain_id, ce.kind, ce.value, ce.source, ce.source_id
+  FROM twins t
+  JOIN gold.company_evidence_domain ce ON ce.company_id = t.placeholder_id
+  ON CONFLICT (company_id, kind, value) DO NOTHING
+  RETURNING 1
+)
+DELETE FROM gold.company c
+USING twins t
+WHERE c.company_id = t.placeholder_id;
+
+COMMIT;
