@@ -1,6 +1,6 @@
 -- transforms/sql/12_gold_company_etl.sql
 -- Gold ETL: domain-first → LinkedIn-second → StepStoneID → name+geo → name-last.
--- Plus cohort-best survivorship and safe merges.
+-- Plus cohort-best survivorship and safe merges (including slug+placeholder collapse).
 -- Source: silver.unified_silver
 
 BEGIN;
@@ -226,12 +226,16 @@ resolved AS (
   FROM rooted s
 ),
 
--- 4) Insert NAME-ONLY placeholders where needed (ONE per name_norm)
+-- 4) Insert NAME-ONLY placeholders where needed (ONE per name_norm),
+--    and only when NO company row exists yet for that name_norm (prevents slug+placeholder dupes).
 ins_placeholders AS (
   INSERT INTO gold.company AS gc (name)
   SELECT DISTINCT ON (r.name_norm) r.company_name
   FROM resolved r
   WHERE r.company_id IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM gold.company g WHERE g.name_norm = r.name_norm
+    )
   ORDER BY r.name_norm, length(r.company_name) DESC, r.company_name
   ON CONFLICT DO NOTHING
   RETURNING gc.company_id, gc.name_norm
@@ -503,37 +507,63 @@ DELETE FROM gold.company c
 USING twins t
 WHERE c.company_id = t.placeholder_id;
 
--- 10) FINAL SAFETY NET: collapse duplicate pure placeholders (no domain, no slug)
-WITH dup AS (
-  SELECT name_norm, array_agg(company_id ORDER BY company_id) AS ids
+-- 10) FINAL SAFETY NET:
+-- Collapse any remaining duplicates per name_norm where ALL rows lack a website_domain.
+-- Prefer survivor with a LinkedIn slug; otherwise lowest company_id.
+WITH grp AS (
+  SELECT
+    name_norm,
+    BOOL_OR(website_domain IS NOT NULL) AS any_domain
   FROM gold.company
-  WHERE website_domain IS NULL
-    AND linkedin_slug IS NULL
   GROUP BY name_norm
   HAVING COUNT(*) > 1
 ),
-pairs AS (
-  SELECT d.name_norm, d.ids[1] AS survivor_id, unnest(d.ids[2:]) AS victim_id
-  FROM dup d
+targets AS (
+  SELECT g.name_norm
+  FROM grp g
+  WHERE g.any_domain = FALSE  -- only groups with no domains at all
 ),
-move_alias AS (
+ranked AS (
+  SELECT
+    c.name_norm,
+    c.company_id,
+    (c.linkedin_slug IS NOT NULL) AS has_slug,
+    ROW_NUMBER() OVER (
+      PARTITION BY c.name_norm
+      ORDER BY (c.linkedin_slug IS NOT NULL) DESC, c.company_id ASC
+    ) AS rnk
+  FROM gold.company c
+  JOIN targets t ON t.name_norm = c.name_norm
+),
+survivors AS (
+  SELECT name_norm, company_id AS survivor_id
+  FROM ranked
+  WHERE rnk = 1
+),
+victims AS (
+  SELECT r.name_norm, r.company_id AS victim_id, s.survivor_id
+  FROM ranked r
+  JOIN survivors s USING (name_norm)
+  WHERE r.company_id <> s.survivor_id
+),
+move_alias_final AS (
   INSERT INTO gold.company_alias (company_id, alias)
-  SELECT p.survivor_id, ca.alias
-  FROM pairs p
-  JOIN gold.company_alias ca ON ca.company_id = p.victim_id
+  SELECT v.survivor_id, ca.alias
+  FROM victims v
+  JOIN gold.company_alias ca ON ca.company_id = v.victim_id
   ON CONFLICT (company_id, alias_norm) DO NOTHING
   RETURNING 1
 ),
-move_ev AS (
+move_ev_final AS (
   INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
-  SELECT p.survivor_id, ce.kind, ce.value, ce.source, ce.source_id
-  FROM pairs p
-  JOIN gold.company_evidence_domain ce ON ce.company_id = p.victim_id
+  SELECT v.survivor_id, ce.kind, ce.value, ce.source, ce.source_id
+  FROM victims v
+  JOIN gold.company_evidence_domain ce ON ce.company_id = v.victim_id
   ON CONFLICT (company_id, kind, value) DO NOTHING
   RETURNING 1
 )
 DELETE FROM gold.company c
-USING pairs p
-WHERE c.company_id = p.victim_id;
+USING victims v
+WHERE c.company_id = v.victim_id;
 
 COMMIT;
