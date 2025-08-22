@@ -15,41 +15,13 @@ WITH jobspy_rows AS (
     j.scraped_at                                     AS scraped_at,
     j.date_posted                                    AS date_posted,
 
-    -- URLs & hosts (JobSpy: derive from source_row_url)
-    j.source_row_url::text                           AS job_url_raw,
-    util.url_canonical(j.source_row_url)             AS job_url_canonical,
-    (regexp_match(
-       COALESCE(util.url_canonical(j.source_row_url), ''),
-       '/jobs/view/([0-9]+)'))[1]                    AS linkedin_job_id,
-    j.source_row_url::text                           AS apply_url_raw,
-    util.url_canonical(j.source_row_url)             AS apply_url_canonical,
-    util.url_host(util.url_canonical(j.source_row_url))                 AS apply_domain,
-    util.org_domain(util.url_host(util.url_canonical(j.source_row_url))) AS apply_root,
-
     -- Title & content
     j.title_raw::text                                AS title_raw,
     j.title_norm::text                               AS title_norm,
-    j.description_raw::text                          AS description_raw,
-
-    -- Company
     j.company_raw::text                              AS company_raw,
     util.company_name_norm_langless(j.company_raw)   AS company_name_norm_langless,
     util.company_name_norm(j.company_raw)            AS company_name_norm,
-    j.company_website_raw::text                      AS company_website_raw,
-    util.url_canonical(j.company_website_raw)        AS company_website_canonical,
-    j.company_linkedin_url::text                     AS company_linkedin_url,
-    j.company_website::text                          AS company_website,
-    j.company_domain::text                           AS company_domain,
-    NULL::text                                       AS company_description_raw,
-    NULL::text                                       AS company_size_raw,
-    NULL::text                                       AS company_industry_raw,
-    NULL::text                                       AS company_logo_url,
-    NULL::text                                       AS company_location_raw,
-    NULL::text                                       AS company_address_raw,
-    NULL::text                                       AS company_stepstone_id,
-    NULL::int                                        AS company_active_jobs,
-    NULL::text                                       AS company_hero_url,
-    NULL::int                                        AS company_founded_year,
+    j.description_raw::text                          AS description_raw,
 
     -- Location
     j.location_raw::text                             AS location_raw,
@@ -57,24 +29,37 @@ WITH jobspy_rows AS (
     j.region_guess::text                             AS region_guess,
     j.country_guess::text                            AS country_guess,
 
-    -- Job meta (JobSpy exposes a subset; others NULL)
+    -- Job meta
     j.contract_type_raw::text                        AS contract_type_raw,
-    NULL::text                                       AS work_type_raw,
-    NULL::text                                       AS job_type_raw,
-    NULL::text                                       AS job_function_raw,
-    NULL::text                                       AS job_level_raw,
-    NULL::text                                       AS remote_type_raw,
     j.is_remote                                      AS is_remote,
 
-    -- Compensation
-    j.salary_min::numeric                            AS salary_min,
-    j.salary_max::numeric                            AS salary_max,
-    j.currency::text                                 AS currency,
+    -- Compensation (JobSpy doesn’t expose these in silver → keep NULLs)
+    NULL::numeric                                    AS salary_min,
+    NULL::numeric                                    AS salary_max,
+    NULL::text                                       AS currency,
     NULL::text                                       AS salary_interval,
     NULL::text                                       AS salary_source,
 
+    -- URLs & hosts (derive for JobSpy)
+    COALESCE(j.job_url_direct, j.source_row_url)::text                    AS job_url_raw,
+    util.url_canonical(COALESCE(j.job_url_direct, j.source_row_url))      AS job_url_canonical,
+    (regexp_match(
+       COALESCE(util.url_canonical(COALESCE(j.job_url_direct, j.source_row_url)), ''),
+       '/jobs/view/([0-9]+)'))[1]                                         AS linkedin_job_id,
+    COALESCE(j.job_url_direct, j.source_row_url)::text                    AS apply_url_raw,
+    util.url_canonical(COALESCE(j.job_url_direct, j.source_row_url))      AS apply_url_canonical,
+    util.url_host(util.url_canonical(COALESCE(j.job_url_direct, j.source_row_url)))       AS apply_domain,
+    util.org_domain(util.url_host(util.url_canonical(COALESCE(j.job_url_direct, j.source_row_url)))) AS apply_root,
+
+    -- Company links/domains
+    j.company_website_raw::text                     AS company_website_raw,
+    util.url_canonical(j.company_website_raw)       AS company_website_canonical,
+    j.company_linkedin_url::text                    AS company_linkedin_url,
+    j.company_website::text                         AS company_website,
+    j.company_domain::text                          AS company_domain,
+
     -- Contacts & socials
-    j.emails_raw::text                               AS emails_raw,
+    j.emails_raw::text                              AS emails_raw,
     CASE
       WHEN j.emails_raw IS NULL OR btrim(j.emails_raw) = '' THEN NULL
       ELSE regexp_split_to_array(j.emails_raw, '\s*[,;]\s*')
@@ -84,11 +69,27 @@ WITH jobspy_rows AS (
     NULL::jsonb                                      AS contacts_raw,
     NULL::text                                       AS contact_person_raw,
     NULL::text                                       AS contact_phone_raw,
-    NULL::text                                       AS social_links_raw,
 
-    -- External IDs
+    -- Company meta
+    j.company_industry_raw::text                     AS company_industry_raw,
+    j.company_logo_url::text                         AS company_logo_url,
+    j.company_description_raw::text                  AS company_description_raw,
+    j.company_location_raw::text                     AS company_location_raw,
+    NULL::text                                       AS company_size_raw,
+    NULL::text                                       AS company_address_raw,
+    NULL::text                                       AS company_stepstone_id,
+    NULL::int                                        AS company_active_jobs,
+    NULL::text                                       AS company_hero_url,
+    NULL::int                                        AS company_founded_year,
+
+    -- External IDs (not present in JobSpy silver)
     NULL::text                                       AS external_id_raw,
-    NULL::text                                       AS listing_id_raw
+    NULL::text                                       AS listing_id_raw,
+
+    -- Per-source extras not in JobSpy
+    NULL::text                                       AS job_level_raw,
+    NULL::text                                       AS remote_type_raw,
+    NULL::text                                       AS social_links_raw
 
   FROM silver.jobspy j
 ),
@@ -102,43 +103,13 @@ profesia_rows AS (
     p.scraped_at                                     AS scraped_at,
     p.date_posted                                    AS date_posted,
 
-    -- URLs & hosts
-    p.job_url_raw::text                              AS job_url_raw,
-    util.url_canonical(p.job_url_raw)                AS job_url_canonical,
-    (regexp_match(
-       COALESCE(util.url_canonical(p.job_url_raw),
-                util.url_canonical(p.apply_url_raw),
-                ''),
-       '/jobs/view/([0-9]+)'))[1]                    AS linkedin_job_id,
-    p.apply_url_raw::text                            AS apply_url_raw,
-    util.url_canonical(p.apply_url_raw)              AS apply_url_canonical,
-    util.url_host(util.url_canonical(p.apply_url_raw))               AS apply_domain,
-    util.org_domain(util.url_host(util.url_canonical(p.apply_url_raw))) AS apply_root,
-
     -- Title & content
     p.title_raw::text                                AS title_raw,
     p.title_norm::text                               AS title_norm,
-    p.description_raw::text                          AS description_raw,
-
-    -- Company
     p.company_raw::text                              AS company_raw,
     p.company_name_norm_langless::text               AS company_name_norm_langless,
     p.company_name_norm::text                        AS company_name_norm,
-    p.company_website_raw::text                      AS company_website_raw,
-    util.url_canonical(p.company_website_raw)        AS company_website_canonical,
-    p.company_linkedin_url::text                     AS company_linkedin_url,
-    p.company_website::text                          AS company_website,
-    p.company_domain::text                           AS company_domain,
-    p.company_description_raw::text                  AS company_description_raw,
-    p.company_size_raw::text                         AS company_size_raw,
-    p.company_industry_raw::text                     AS company_industry_raw,
-    p.company_logo_url::text                         AS company_logo_url,
-    p.company_location_raw::text                     AS company_location_raw,
-    NULL::text                                       AS company_address_raw,
-    NULL::text                                       AS company_stepstone_id,
-    NULL::int                                        AS company_active_jobs,
-    NULL::text                                       AS company_hero_url,
-    NULL::int                                        AS company_founded_year,
+    p.description_raw::text                          AS description_raw,
 
     -- Location
     p.location_raw::text                             AS location_raw,
@@ -148,11 +119,6 @@ profesia_rows AS (
 
     -- Job meta
     p.contract_type_raw::text                        AS contract_type_raw,
-    NULL::text                                       AS work_type_raw,
-    NULL::text                                       AS job_type_raw,
-    NULL::text                                       AS job_function_raw,
-    p.job_level_raw::text                            AS job_level_raw,
-    p.remote_type_raw::text                          AS remote_type_raw,
     p.is_remote                                      AS is_remote,
 
     -- Compensation
@@ -161,6 +127,22 @@ profesia_rows AS (
     p.currency::text                                 AS currency,
     p.salary_interval::text                          AS salary_interval,
     p.salary_source::text                            AS salary_source,
+
+    -- URLs & hosts (already computed in silver.profesia_sk)
+    p.job_url_raw::text                              AS job_url_raw,
+    p.job_url_canonical::text                        AS job_url_canonical,
+    p.linkedin_job_id::text                          AS linkedin_job_id,
+    p.apply_url_raw::text                            AS apply_url_raw,
+    p.apply_url_canonical::text                      AS apply_url_canonical,
+    p.apply_domain::text                             AS apply_domain,
+    p.apply_root::text                               AS apply_root,
+
+    -- Company links/domains
+    p.company_website_raw::text                      AS company_website_raw,
+    p.company_website_canonical::text                AS company_website_canonical,
+    p.company_linkedin_url::text                     AS company_linkedin_url,
+    p.company_website::text                          AS company_website,
+    p.company_domain::text                           AS company_domain,
 
     -- Contacts & socials
     p.emails_raw::text                               AS emails_raw,
@@ -173,11 +155,27 @@ profesia_rows AS (
     NULL::jsonb                                      AS contacts_raw,
     p.contact_person_raw::text                       AS contact_person_raw,
     p.contact_phone_raw::text                        AS contact_phone_raw,
-    p.social_links_raw::text                         AS social_links_raw,
 
-    -- External IDs
+    -- Company meta
+    p.company_size_raw::text                         AS company_size_raw,
+    p.company_industry_raw::text                     AS company_industry_raw,
+    p.company_logo_url::text                         AS company_logo_url,
+    p.company_description_raw::text                  AS company_description_raw,
+    p.company_location_raw::text                     AS company_location_raw,
+    NULL::text                                       AS company_address_raw,
+    NULL::text                                       AS company_stepstone_id,
+    NULL::int                                        AS company_active_jobs,
+    NULL::text                                       AS company_hero_url,
+    NULL::int                                        AS company_founded_year,
+
+    -- External IDs (not present in Profesia silver)
     NULL::text                                       AS external_id_raw,
-    NULL::text                                       AS listing_id_raw
+    NULL::text                                       AS listing_id_raw,
+
+    -- Per-source extras present in Profesia
+    p.job_level_raw::text                            AS job_level_raw,
+    p.remote_type_raw::text                          AS remote_type_raw,
+    p.social_links_raw::text                         AS social_links_raw
 
   FROM silver.profesia_sk p
 ),
@@ -191,46 +189,13 @@ stepstone_rows AS (
     s.scraped_at                                     AS scraped_at,
     s.date_posted                                    AS date_posted,
 
-    -- URLs & hosts
-    s.job_url_raw::text                              AS job_url_raw,
-    util.url_canonical(s.job_url_raw)                AS job_url_canonical,
-    (regexp_match(
-       COALESCE(util.url_canonical(s.job_url_raw),
-                util.url_canonical(s.apply_url_raw),
-                ''),
-       '/jobs/view/([0-9]+)'))[1]                    AS linkedin_job_id,
-    s.apply_url_raw::text                            AS apply_url_raw,
-    util.url_canonical(s.apply_url_raw)              AS apply_url_canonical,
-    util.url_host(util.url_canonical(s.apply_url_raw))               AS apply_domain,
-    util.org_domain(util.url_host(util.url_canonical(s.apply_url_raw))) AS apply_root,
-
     -- Title & content
     s.title_raw::text                                AS title_raw,
     s.title_norm::text                               AS title_norm,
-    s.description_raw::text                          AS description_raw,
-
-    -- Company
     s.company_raw::text                              AS company_raw,
     s.company_name_norm_langless::text               AS company_name_norm_langless,
     s.company_name_norm::text                        AS company_name_norm,
-    s.company_website_raw::text                      AS company_website_raw,
-    util.url_canonical(s.company_website_raw)        AS company_website_canonical,
-    s.company_linkedin_url::text                     AS company_linkedin_url,
-    s.company_website::text                          AS company_website,
-    s.company_domain::text                           AS company_domain,
-    s.company_description_raw::text                  AS company_description_raw,
-    s.company_size_raw::text                         AS company_size_raw,
-    s.company_industry_raw::text                     AS company_industry_raw,
-    s.company_logo_url::text                         AS company_logo_url,
-    NULL::text                                       AS company_location_raw,
-    s.company_address_raw::text                      AS company_address_raw,
-    s.company_stepstone_id::text                     AS company_stepstone_id,
-    CASE
-      WHEN s.company_active_jobs ~ '^[0-9]+$' THEN s.company_active_jobs::int
-      ELSE NULL
-    END                                              AS company_active_jobs,
-    s.company_hero_url::text                         AS company_hero_url,
-    s.company_founded_year                           AS company_founded_year,
+    s.description_raw::text                          AS description_raw,
 
     -- Location
     s.location_raw::text                             AS location_raw,
@@ -240,11 +205,6 @@ stepstone_rows AS (
 
     -- Job meta
     s.contract_type_raw::text                        AS contract_type_raw,
-    s.work_type_raw::text                            AS work_type_raw,
-    s.job_type_raw::text                             AS job_type_raw,
-    s.job_function_raw::text                         AS job_function_raw,
-    NULL::text                                       AS job_level_raw,
-    NULL::text                                       AS remote_type_raw,
     s.is_remote                                      AS is_remote,
 
     -- Compensation
@@ -254,6 +214,22 @@ stepstone_rows AS (
     s.salary_interval::text                          AS salary_interval,
     s.salary_source::text                            AS salary_source,
 
+    -- URLs & hosts (already computed in silver.stepstone)
+    s.job_url_raw::text                              AS job_url_raw,
+    s.job_url_canonical::text                        AS job_url_canonical,
+    s.linkedin_job_id::text                          AS linkedin_job_id,
+    s.apply_url_raw::text                            AS apply_url_raw,
+    s.apply_url_canonical::text                      AS apply_url_canonical,
+    s.apply_domain::text                             AS apply_domain,
+    s.apply_root::text                               AS apply_root,
+
+    -- Company links/domains
+    s.company_website_raw::text                      AS company_website_raw,
+    s.company_website_canonical::text                AS company_website_canonical,
+    s.company_linkedin_url::text                     AS company_linkedin_url,
+    s.company_website::text                          AS company_website,
+    s.company_domain::text                           AS company_domain,
+
     -- Contacts & socials
     s.emails_raw::text                               AS emails_raw,
     s.emails_all                                     AS emails_all,
@@ -262,11 +238,27 @@ stepstone_rows AS (
     s.contacts_raw                                   AS contacts_raw,
     s.contact_person_raw::text                       AS contact_person_raw,
     s.contact_phone_raw::text                        AS contact_phone_raw,
-    NULL::text                                       AS social_links_raw,
+
+    -- Company meta
+    s.company_size_raw::text                         AS company_size_raw,
+    s.company_industry_raw::text                     AS company_industry_raw,
+    s.company_logo_url::text                         AS company_logo_url,
+    s.company_description_raw::text                  AS company_description_raw,
+    NULL::text                                       AS company_location_raw,
+    s.company_address_raw::text                      AS company_address_raw,
+    s.company_stepstone_id::text                     AS company_stepstone_id,
+    s.company_active_jobs::int                       AS company_active_jobs,
+    s.company_hero_url::text                         AS company_hero_url,
+    s.company_founded_year                           AS company_founded_year,
 
     -- External IDs
     s.external_id_raw::text                          AS external_id_raw,
-    s.listing_id_raw::text                           AS listing_id_raw
+    s.listing_id_raw::text                           AS listing_id_raw,
+
+    -- Per-source extras not present in StepStone silver
+    NULL::text                                       AS job_level_raw,
+    NULL::text                                       AS remote_type_raw,
+    NULL::text                                       AS social_links_raw
 
   FROM silver.stepstone s
 )
