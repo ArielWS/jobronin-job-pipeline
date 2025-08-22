@@ -1,12 +1,13 @@
 -- transforms/sql/12_gold_company_etl.sql
 -- Unified ETL for gold.company:
 --   0) normalize legacy brand_key
---   1) seed-by-name
+--   1) seed-by-name (only if no row for name_norm exists)
 --   2) upsert (name-first, then domain/brand + profile enrichment)
 --   3) evidence write (website/email)
 --   4) promote/upgrade website_domain from evidence
 --   5) aliases
 --   6) linkedin slug extraction
+--   7) cleanup: collapse placeholder rows (NULL domain) into their domain-resolved twin
 -- Source: silver.unified_silver
 
 BEGIN;
@@ -19,7 +20,7 @@ SET brand_key = NULL
 WHERE brand_key = '';
 
 --------------------------------------------------------------------------------
--- 1) Seed companies by distinct normalized name
+-- 1) Seed companies by distinct normalized name (only if none exists yet)
 --------------------------------------------------------------------------------
 WITH cand AS (
   SELECT DISTINCT
@@ -38,9 +39,11 @@ picked AS (
   ORDER BY name_norm, website_root
 )
 INSERT INTO gold.company (name, website_domain)
-SELECT company_name, website_root
-FROM picked
-ON CONFLICT DO NOTHING;
+SELECT p.company_name, p.website_root
+FROM picked p
+WHERE NOT EXISTS (
+  SELECT 1 FROM gold.company gc WHERE gc.name_norm = p.name_norm
+);
 
 --------------------------------------------------------------------------------
 -- 2) Collision-proof upsert from silver.unified_silver
@@ -129,7 +132,6 @@ profile_agg AS (
 best_per_name_brand AS (
   SELECT
     b.*,
-    /* NULL = no brand; avoids empty-string pitfalls */
     (
       SELECT r.brand_key
       FROM gold.company_brand_rule r
@@ -307,77 +309,4 @@ WHERE w.company_id = gc.company_id
   AND NOT util.is_ats_host(w.value)
   AND NOT util.is_career_host(w.value)
   AND NOT EXISTS (
-        SELECT 1
-        FROM gold.company c2
-        WHERE c2.company_id <> gc.company_id
-          AND c2.website_domain = lower(w.value)
-          AND COALESCE(c2.brand_key,'') = COALESCE(gc.brand_key,'')
-      );
-
---------------------------------------------------------------------------------
--- 4) Aliases from unified_silver using same_org_domain for direct matches
---------------------------------------------------------------------------------
-WITH map AS (
-  SELECT
-    s.company_raw AS company_name,
-    COALESCE(gc.company_id, gc2.company_id, gc3.company_id) AS company_id
-  FROM silver.unified_silver s
-  LEFT JOIN gold.company gc
-    ON s.company_domain IS NOT NULL
-   AND util.same_org_domain(gc.website_domain, s.company_domain)
-  LEFT JOIN gold.company gc2
-    ON gc.company_id IS NULL
-   AND s.contact_email_root IS NOT NULL
-   AND NOT util.is_generic_email_domain(s.contact_email_root)
-   AND util.company_name_norm(gc2.name) = util.company_name_norm(s.company_raw)
-  LEFT JOIN gold.company gc3
-    ON gc.company_id IS NULL
-   AND gc2.company_id IS NULL
-   AND util.company_name_norm(gc3.name) = util.company_name_norm(s.company_raw)
-  WHERE s.company_raw IS NOT NULL AND btrim(s.company_raw) <> ''
-)
-INSERT INTO gold.company_alias (company_id, alias)
-SELECT DISTINCT company_id, company_name
-FROM map
-WHERE company_id IS NOT NULL
-ON CONFLICT (company_id, alias_norm) DO NOTHING;
-
---------------------------------------------------------------------------------
--- 5) LinkedIn company slug extraction from unified_silver
---------------------------------------------------------------------------------
-WITH linkedin_sources AS (
-  SELECT
-    util.company_name_norm(s.company_raw) AS name_norm,
-    COALESCE(s.company_linkedin_url, s.company_website) AS linkedin_url
-  FROM silver.unified_silver s
-  WHERE COALESCE(s.company_linkedin_url, s.company_website) ILIKE '%linkedin.com/company/%'
-),
-slugs AS (
-  SELECT
-    name_norm,
-    lower(
-      regexp_replace(
-        linkedin_url,
-        E'^https?://[^/]*linkedin\\.com/company/([^/?#]+).*',
-        E'\\1'
-      )
-    ) AS slug
-  FROM linkedin_sources
-  WHERE name_norm IS NOT NULL
-    AND linkedin_url IS NOT NULL
-),
-uniq_slugs AS (
-  SELECT
-    name_norm,
-    MIN(slug) AS slug
-  FROM slugs
-  WHERE slug IS NOT NULL
-  GROUP BY name_norm
-)
-UPDATE gold.company gc
-SET linkedin_slug = us.slug
-FROM uniq_slugs us
-WHERE gc.name_norm = us.name_norm
-  AND gc.linkedin_slug IS DISTINCT FROM us.slug;
-
-COMMIT;
+        SEL
