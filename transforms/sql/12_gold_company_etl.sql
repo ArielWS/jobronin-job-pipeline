@@ -1,78 +1,60 @@
 -- transforms/sql/12_gold_company_etl.sql
--- Unified ETL for gold.company:
---   0) normalize legacy brand_key
---   1) seed-by-name (only if no row for name_norm exists)
---   2) upsert (name-first, then domain/brand + profile enrichment)
---   3) evidence write (website/email)
---   4) promote/upgrade website_domain from evidence
---   5) aliases
---   6) linkedin slug extraction
---   7) cleanup: collapse placeholder rows (NULL domain) into their domain-resolved twin
+-- Gold ETL: domain-first → LinkedIn-second → StepStoneID → name+geo → name-last.
+-- Plus cohort-best survivorship and safe merges.
 -- Source: silver.unified_silver
 
 BEGIN;
 
---------------------------------------------------------------------------------
--- 0) One-time hygiene: normalize empty brand_key -> NULL
---------------------------------------------------------------------------------
+-- Hygiene: normalize empty brand_key -> NULL
 UPDATE gold.company
 SET brand_key = NULL
 WHERE brand_key = '';
 
---------------------------------------------------------------------------------
--- 1) Seed companies by distinct normalized name (only if none exists yet)
---------------------------------------------------------------------------------
-WITH cand AS (
-  SELECT DISTINCT
-    s.company_raw                                        AS company_name,
-    util.company_name_norm(s.company_raw)                AS name_norm,
-    lower(util.org_domain(NULLIF(s.company_domain,'')))  AS website_root
-  FROM silver.unified_silver s
-  WHERE s.company_raw IS NOT NULL
-    AND btrim(s.company_raw) <> ''
-    AND util.company_name_norm(s.company_raw) IS NOT NULL
-    AND NOT util.is_placeholder_company_name(s.company_raw)
-),
-picked AS (
-  SELECT DISTINCT ON (name_norm) company_name, name_norm, website_root
-  FROM cand
-  ORDER BY name_norm, website_root
-)
-INSERT INTO gold.company (name, website_domain)
-SELECT p.company_name, p.website_root
-FROM picked p
-WHERE NOT EXISTS (
-  SELECT 1 FROM gold.company gc WHERE gc.name_norm = p.name_norm
-);
-
---------------------------------------------------------------------------------
--- 2) Collision-proof upsert from silver.unified_silver
---------------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- Source snapshot (+ derived org_root, linkedin_slug, stepstone_id, geo)
+-- ---------------------------------------------------------------------------
 WITH src AS (
   SELECT DISTINCT
-    s.source                                           AS source,
-    s.source_id::text                                  AS source_id,
-    s.source_row_url                                   AS source_row_url,
-    s.company_raw                                      AS company_name,
-    util.company_name_norm_langless(s.company_raw)     AS name_norm,
+    s.source                                            AS source,
+    s.source_id::text                                   AS source_id,
+    s.source_row_url                                    AS source_row_url,
+    s.company_raw                                       AS company_name,
+    util.company_name_norm_langless(s.company_raw)      AS name_norm,
     lower(util.org_domain(NULLIF(s.company_domain,''))) AS site_root_raw,
-    s.company_description_raw                          AS company_description_raw,
+    s.company_description_raw                           AS company_description_raw,
     CASE WHEN s.company_size_raw ~ '\d' THEN btrim(s.company_size_raw) END AS company_size_raw,
-    s.company_industry_raw                             AS company_industry_raw,
-    s.company_logo_url                                 AS company_logo_url,
+    s.company_industry_raw                              AS company_industry_raw,
+    s.company_logo_url                                  AS company_logo_url,
     CASE
       WHEN s.contact_email_root IS NOT NULL
            AND NOT util.is_generic_email_domain(s.contact_email_root)
       THEN lower(s.contact_email_root)
       ELSE NULL
-    END                                                AS email_root_raw
+    END                                                 AS email_root_raw,
+    -- LinkedIn slug
+    CASE
+      WHEN COALESCE(s.company_linkedin_url, s.company_website) ILIKE '%linkedin.com/company/%'
+      THEN lower(regexp_replace(
+             COALESCE(s.company_linkedin_url, s.company_website),
+             E'^https?://[^/]*linkedin\\.com/company/([^/?#]+).*',
+             E'\\1'
+           ))
+      ELSE NULL
+    END                                                 AS linkedin_slug,
+    -- StepStone org/company id if available
+    NULLIF(s.company_stepstone_id::text,'')             AS stepstone_id,
+    -- Light geo
+    NULLIF(s.city_guess,'')                             AS city_guess,
+    NULLIF(s.region_guess,'')                           AS region_guess,
+    NULLIF(s.country_guess,'')                          AS country_guess,
+    coalesce(NULLIF(s.company_location_raw,''), NULLIF(s.company_address_raw,''), NULLIF(s.location_raw,'')) AS loc_text
   FROM silver.unified_silver s
   WHERE s.company_raw IS NOT NULL
     AND btrim(s.company_raw) <> ''
     AND util.company_name_norm_langless(s.company_raw) IS NOT NULL
     AND util.is_placeholder_company_name(s.company_raw) = FALSE
 ),
-best_per_name AS (
+rooted AS (
   SELECT
     s.*,
     CASE
@@ -84,182 +66,287 @@ best_per_name AS (
       WHEN s.email_root_raw IS NOT NULL
       THEN s.email_root_raw
       ELSE NULL
-    END AS org_root,
-    ROW_NUMBER() OVER (
-      PARTITION BY s.name_norm
-      ORDER BY
-        (s.company_description_raw IS NOT NULL
-         OR s.company_size_raw IS NOT NULL
-         OR s.company_industry_raw IS NOT NULL
-         OR s.company_logo_url IS NOT NULL) DESC,
-        (s.site_root_raw IS NOT NULL
-         AND NOT util.is_aggregator_host(s.site_root_raw)
-         AND NOT util.is_ats_host(s.site_root_raw)
-         AND NOT util.is_career_host(s.site_root_raw)) DESC,
-        length(coalesce(s.company_name,'')) DESC
-    ) AS rn
+    END AS org_root
   FROM src s
 ),
-profile_agg AS (
-  SELECT DISTINCT
-    s.name_norm,
-    FIRST_VALUE(s.company_description_raw) OVER (
-      PARTITION BY s.name_norm
-      ORDER BY (s.company_description_raw IS NULL),
-               (s.site_root_raw IS NULL),
-               length(coalesce(s.company_description_raw, '')) DESC
-    ) AS company_description_raw,
-    FIRST_VALUE(s.company_size_raw) OVER (
-      PARTITION BY s.name_norm
-      ORDER BY (s.company_size_raw IS NULL),
-               (s.site_root_raw IS NULL),
-               length(coalesce(s.company_size_raw, '')) DESC
-    ) AS company_size_raw,
-    FIRST_VALUE(s.company_industry_raw) OVER (
-      PARTITION BY s.name_norm
-      ORDER BY (s.company_industry_raw IS NULL),
-               (s.site_root_raw IS NULL),
-               length(coalesce(s.company_industry_raw, '')) DESC
-    ) AS company_industry_raw,
-    FIRST_VALUE(s.company_logo_url) OVER (
-      PARTITION BY s.name_norm
-      ORDER BY (s.company_logo_url IS NULL),
-               (s.site_root_raw IS NULL),
-               length(coalesce(s.company_logo_url, '')) DESC
-    ) AS company_logo_url
-  FROM src s
-),
-best_per_name_brand AS (
+rooted_brand AS (
   SELECT
-    b.*,
+    r.*,
     (
-      SELECT r.brand_key
-      FROM gold.company_brand_rule r
-      WHERE r.active = TRUE
-        AND r.domain_root = b.org_root
-        AND b.name_norm ~ r.brand_regex
+      SELECT r2.brand_key
+      FROM gold.company_brand_rule r2
+      WHERE r2.active = TRUE
+        AND r2.domain_root = r.org_root
+        AND r.name_norm ~ r2.brand_regex
       LIMIT 1
     ) AS brand_key_norm
-  FROM best_per_name b
-  WHERE b.rn = 1
+  FROM rooted r
 ),
-ins_names AS (
-  INSERT INTO gold.company AS gc (name, brand_key, description, size_raw, industry_raw, logo_url)
+
+-- 1) DOMAIN-FIRST: one winner per (org_root, brand_key)
+root_winners AS (
+  SELECT *
+  FROM (
+    SELECT
+      rb.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY rb.org_root, COALESCE(rb.brand_key_norm, '')
+        ORDER BY
+          (rb.company_description_raw IS NOT NULL
+           OR rb.company_size_raw IS NOT NULL
+           OR rb.company_industry_raw IS NOT NULL
+           OR rb.company_logo_url IS NOT NULL) DESC,
+          length(coalesce(rb.company_name,'')) DESC
+      ) AS rn
+    FROM rooted_brand rb
+    WHERE rb.org_root IS NOT NULL
+  ) t
+  WHERE rn = 1
+),
+ins_domain AS (
+  INSERT INTO gold.company AS gc (name, brand_key, website_domain, description, size_raw, industry_raw, logo_url)
   SELECT
-    b.company_name,
-    b.brand_key_norm,
-    p.company_description_raw,
-    p.company_size_raw,
-    p.company_industry_raw,
-    p.company_logo_url
-  FROM best_per_name_brand b
-  JOIN profile_agg p ON p.name_norm = b.name_norm
+    w.company_name,
+    w.brand_key_norm,
+    lower(w.org_root),
+    w.company_description_raw,
+    w.company_size_raw,
+    w.company_industry_raw,
+    w.company_logo_url
+  FROM root_winners w
+  ON CONFLICT (website_domain, brand_key) DO NOTHING
+  RETURNING gc.company_id, gc.name_norm, gc.website_domain
+),
+
+-- 2) LINKEDIN-SECOND: attach slug to unique domain twin or create slug-anchored row
+unique_domain_for_name AS (
+  SELECT name_norm, MIN(company_id) AS company_id, COUNT(*) AS n
+  FROM gold.company
+  WHERE website_domain IS NOT NULL
+  GROUP BY name_norm
+),
+upd_slug_on_unique_domain AS (
+  UPDATE gold.company gc
+  SET linkedin_slug = s.linkedin_slug
+  FROM src s
+  JOIN unique_domain_for_name u
+    ON u.name_norm = s.name_norm AND u.n = 1
+  WHERE gc.company_id = u.company_id
+    AND s.linkedin_slug IS NOT NULL
+    AND gc.linkedin_slug IS DISTINCT FROM s.linkedin_slug
+  RETURNING 1
+),
+linkedin_candidates AS (
+  SELECT DISTINCT s.company_name, s.name_norm, s.linkedin_slug
+  FROM src s
+  WHERE s.linkedin_slug IS NOT NULL
+),
+ins_linkedin AS (
+  INSERT INTO gold.company AS gc (name, linkedin_slug)
+  SELECT lc.company_name, lc.linkedin_slug
+  FROM linkedin_candidates lc
+  WHERE NOT EXISTS (SELECT 1 FROM gold.company g WHERE lower(g.linkedin_slug) = lc.linkedin_slug)
   ON CONFLICT DO NOTHING
   RETURNING gc.company_id, gc.name_norm
 ),
-domain_winner AS (
+
+-- Anchored mapping (current run): rows that can already map by domain or slug
+domain_map AS (
+  SELECT gc.website_domain, gc.company_id
+  FROM gold.company gc
+  WHERE gc.website_domain IS NOT NULL
+),
+slug_map AS (
+  SELECT lower(gc.linkedin_slug) AS slug, gc.company_id
+  FROM gold.company gc
+  WHERE gc.linkedin_slug IS NOT NULL
+),
+anchored_resolved AS (
   SELECT
-    d.*,
-    ROW_NUMBER() OVER (PARTITION BY d.org_root, COALESCE(d.brand_key_norm, '')
-                       ORDER BY length(coalesce(d.company_name,'')) DESC) AS rnk
-  FROM best_per_name_brand d
-  WHERE d.org_root IS NOT NULL
+    s.name_norm,
+    COALESCE(dm.company_id, sm.company_id) AS company_id,
+    s.city_guess, s.region_guess, s.country_guess
+  FROM src s
+  LEFT JOIN domain_map dm ON dm.website_domain = s.org_root
+  LEFT JOIN slug_map   sm ON sm.slug = s.linkedin_slug
+  WHERE dm.company_id IS NOT NULL OR sm.company_id IS NOT NULL
 ),
-upd_domain AS (
-  UPDATE gold.company gc
-  SET website_domain = COALESCE(gc.website_domain, lower(dw.org_root)),
-      brand_key      = COALESCE(gc.brand_key,      dw.brand_key_norm)
-  FROM domain_winner dw
-  WHERE dw.rnk = 1
-    AND gc.name_norm = dw.name_norm
-    AND dw.org_root IS NOT NULL
-  RETURNING 1
-),
-upd_details AS (
-  UPDATE gold.company gc
-  SET description  = COALESCE(gc.description,  p.company_description_raw),
-      size_raw     = COALESCE(gc.size_raw,     p.company_size_raw),
-      industry_raw = COALESCE(gc.industry_raw, p.company_industry_raw),
-      logo_url     = COALESCE(gc.logo_url,     p.company_logo_url)
-  FROM profile_agg p
-  WHERE gc.name_norm = p.name_norm
-  RETURNING 1
-),
+
+-- 3) NAME-LAST placeholders (we'll only create after richer tries fail)
+--    But first, build our final row->company resolution with extended logic.
 resolved AS (
   SELECT
     s.source, s.source_id, s.source_row_url,
     s.company_name, s.name_norm,
     s.email_root_raw,
-    CASE
-      WHEN s.site_root_raw IS NOT NULL
-           AND NOT util.is_aggregator_host(s.site_root_raw)
-           AND NOT util.is_ats_host(s.site_root_raw)
-           AND NOT util.is_career_host(s.site_root_raw)
-      THEN s.site_root_raw
-      WHEN s.email_root_raw IS NOT NULL
-      THEN s.email_root_raw
-      ELSE NULL
-    END AS org_root_candidate,
+    s.org_root AS org_root_candidate,
+    s.linkedin_slug,
+    s.stepstone_id,
+    s.loc_text,
+    s.city_guess, s.region_guess, s.country_guess,
+
+    /* Resolution priority:
+       1) Domain root
+       2) LinkedIn slug
+       3) StepStone company id (from evidence)
+       4) Name + geo match to an anchored company in this run (same name_norm & any geo equal)
+       5) Any existing company with same name_norm (prefer domain rows)
+    */
     COALESCE(
+      -- (1) by domain
       (SELECT gc.company_id
-         FROM domain_winner dw
-         JOIN gold.company gc ON gc.name_norm = dw.name_norm
-        WHERE dw.rnk = 1
-          AND dw.org_root IS NOT NULL
-          AND dw.org_root = CASE
-                              WHEN s.site_root_raw IS NOT NULL
-                                   AND NOT util.is_aggregator_host(s.site_root_raw)
-                                   AND NOT util.is_ats_host(s.site_root_raw)
-                                   AND NOT util.is_career_host(s.site_root_raw)
-                              THEN s.site_root_raw
-                              WHEN s.email_root_raw IS NOT NULL
-                              THEN s.email_root_raw
-                              ELSE NULL
-                            END
+         FROM gold.company gc
+        WHERE gc.website_domain IS NOT NULL
+          AND gc.website_domain = s.org_root
         LIMIT 1),
-      (SELECT gc2.company_id FROM gold.company gc2 WHERE gc2.name_norm = s.name_norm LIMIT 1)
+
+      -- (2) by linkedin slug
+      (SELECT gc.company_id
+         FROM gold.company gc
+        WHERE s.linkedin_slug IS NOT NULL
+          AND lower(gc.linkedin_slug) = s.linkedin_slug
+        LIMIT 1),
+
+      -- (3) by stepstone id evidence
+      (SELECT ced.company_id
+         FROM gold.company_evidence_domain ced
+        WHERE s.stepstone_id IS NOT NULL
+          AND ced.kind = 'stepstone_id'
+          AND lower(ced.value) = lower(s.stepstone_id)
+        LIMIT 1),
+
+      -- (4) by name + geo to an anchored company (unique candidate)
+      (SELECT ar.company_id
+         FROM anchored_resolved ar
+        WHERE ar.name_norm = s.name_norm
+          AND (
+                (ar.city_guess    IS NOT NULL AND ar.city_guess    = s.city_guess) OR
+                (ar.region_guess  IS NOT NULL AND ar.region_guess  = s.region_guess) OR
+                (ar.country_guess IS NOT NULL AND ar.country_guess = s.country_guess)
+              )
+        GROUP BY ar.company_id
+        HAVING COUNT(*) >= 1
+        LIMIT 1),
+
+      -- (5) by name_norm (prefer those with domain)
+      (SELECT gc2.company_id
+         FROM gold.company gc2
+        WHERE gc2.name_norm = s.name_norm
+        ORDER BY (gc2.website_domain IS NOT NULL) DESC, gc2.company_id ASC
+        LIMIT 1)
     ) AS company_id
-  FROM src s
+  FROM rooted s
 ),
-add_alias AS (
-  INSERT INTO gold.company_alias (company_id, alias)
-  SELECT DISTINCT r.company_id, r.company_name
+
+-- 4) Insert NAME-ONLY placeholders only when no resolvable id yet
+ins_placeholders AS (
+  INSERT INTO gold.company AS gc (name)
+  SELECT DISTINCT r.company_name
   FROM resolved r
-  WHERE r.company_id IS NOT NULL
-  ON CONFLICT (company_id, alias_norm) DO NOTHING
-  RETURNING 1
+  WHERE r.company_id IS NULL
+  ON CONFLICT DO NOTHING
+  RETURNING gc.company_id
 ),
+
+-- 5) Evidence write (website/email/stepstone_id/location)
 add_evidence AS (
   INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
-  SELECT DISTINCT r.company_id, kv.kind, kv.val, r.source, r.source_id
+  SELECT DISTINCT
+    COALESCE(r.company_id,
+             (SELECT gc.company_id FROM gold.company gc WHERE gc.name_norm = r.name_norm ORDER BY (gc.website_domain IS NOT NULL) DESC, gc.company_id LIMIT 1)
+    ) AS cid,
+    kv.kind,
+    kv.val,
+    r.source,
+    r.source_id
   FROM resolved r
   CROSS JOIN LATERAL (
     VALUES
       ('website', lower(r.org_root_candidate)),
-      ('email',   CASE WHEN r.email_root_raw IS NOT NULL
-                           AND NOT util.is_generic_email_domain(r.email_root_raw)
-                       THEN lower(r.email_root_raw) END)
+      ('email',   CASE WHEN r.email_root_raw IS NOT NULL AND NOT util.is_generic_email_domain(r.email_root_raw)
+                       THEN lower(r.email_root_raw) END),
+      ('stepstone_id', r.stepstone_id),
+      ('location', NULLIF(r.loc_text,''))
   ) AS kv(kind, val)
-  WHERE r.company_id IS NOT NULL
-    AND kv.val IS NOT NULL
+  WHERE kv.val IS NOT NULL
   ON CONFLICT (company_id, kind, value) DO NOTHING
   RETURNING 1
 ),
-ins_names_ref AS (SELECT 1 FROM ins_names LIMIT 1)
 
--- Promote placeholder names if we learned a better one
-UPDATE gold.company gc
-SET name = b.company_name
-FROM best_per_name_brand b, ins_names_ref
-WHERE util.is_placeholder_company_name(gc.name)
-  AND gc.name_norm = b.name_norm
-  AND util.company_name_norm_langless(b.company_name) = gc.name_norm;
+-- 6) Cohort-best survivorship (per company_id), overwrite deterministically
+profile_candidates AS (
+  SELECT
+    COALESCE(r.company_id,
+             (SELECT gc.company_id FROM gold.company gc WHERE gc.name_norm = r.name_norm ORDER BY (gc.website_domain IS NOT NULL) DESC, gc.company_id LIMIT 1)
+    ) AS company_id,
+    (r.org_root_candidate IS NOT NULL) AS has_org_root,
+    r.source, r.source_id,
+    s.company_description_raw,
+    s.company_size_raw,
+    s.company_industry_raw,
+    s.company_logo_url
+  FROM resolved r
+  JOIN src s
+    ON s.name_norm = r.name_norm
+   AND s.source = r.source
+   AND s.source_id = r.source_id
+  WHERE (r.company_id IS NOT NULL OR EXISTS (SELECT 1 FROM ins_placeholders))
+),
+profile_best AS (
+  SELECT DISTINCT
+    pc.company_id,
 
---------------------------------------------------------------------------------
--- 3) Promotion of website_domain from evidence (trustworthy website > email)
---------------------------------------------------------------------------------
--- Upgrade to trustworthy WEBSITE domain (or from weaker)
-UPDATE gold.company gc
+    FIRST_VALUE(pc.company_description_raw) OVER (
+      PARTITION BY pc.company_id
+      ORDER BY (pc.company_description_raw IS NOT NULL) DESC,
+               pc.has_org_root DESC,
+               length(coalesce(pc.company_description_raw,'')) DESC,
+               coalesce(pc.source,'~') ASC,
+               coalesce(pc.source_id,'~') ASC
+    ) AS best_description,
+
+    (SELECT val FROM (
+       SELECT pc2.company_size_raw AS val, COUNT(*) AS cnt, BOOL_OR(pc2.has_org_root) AS any_root
+       FROM profile_candidates pc2
+       WHERE pc2.company_id = pc.company_id AND pc2.company_size_raw IS NOT NULL
+       GROUP BY pc2.company_size_raw
+       ORDER BY cnt DESC, any_root DESC, length(pc2.company_size_raw) DESC, val ASC
+       LIMIT 1
+     ) x) AS best_size,
+
+    (SELECT val FROM (
+       SELECT pc3.company_industry_raw AS val, COUNT(*) AS cnt, BOOL_OR(pc3.has_org_root) AS any_root
+       FROM profile_candidates pc3
+       WHERE pc3.company_id = pc.company_id AND pc3.company_industry_raw IS NOT NULL
+       GROUP BY pc3.company_industry_raw
+       ORDER BY cnt DESC, any_root DESC, length(pc3.company_industry_raw) DESC, val ASC
+       LIMIT 1
+     ) y) AS best_industry,
+
+    FIRST_VALUE(pc.company_logo_url) OVER (
+      PARTITION BY pc.company_id
+      ORDER BY (pc.company_logo_url IS NOT NULL) DESC,
+               pc.has_org_root DESC,
+               length(coalesce(pc.company_logo_url,'')) DESC,
+               coalesce(pc.source,'~') ASC,
+               coalesce(pc.source_id,'~') ASC
+    ) AS best_logo
+
+  FROM profile_candidates pc
+),
+upd_profile AS (
+  UPDATE gold.company gc
+  SET description  = pb.best_description,
+      size_raw     = pb.best_size,
+      industry_raw = pb.best_industry,
+      logo_url     = pb.best_logo
+  FROM profile_best pb
+  WHERE gc.company_id = pb.company_id
+  RETURNING 1
+)
+
+-- 7) Promote website_domain from WEBSITE evidence (trustworthy > email)
+; UPDATE gold.company gc
 SET website_domain = lower(w.value)
 FROM (
     SELECT DISTINCT ON (ed.value, COALESCE(c.brand_key,''))
@@ -278,20 +365,14 @@ WHERE w.company_id = gc.company_id
   AND gc.website_domain IS DISTINCT FROM lower(w.value)
   AND (
         gc.website_domain IS NULL
-        OR EXISTS (
-             SELECT 1
-             FROM gold.company_evidence_domain e
-             WHERE e.company_id = gc.company_id
-               AND e.kind = 'email'
-               AND e.value = gc.website_domain
-        )
+        OR EXISTS (SELECT 1 FROM gold.company_evidence_domain e
+                   WHERE e.company_id = gc.company_id AND e.kind = 'email' AND e.value = gc.website_domain)
         OR util.is_aggregator_host(gc.website_domain)
         OR util.is_ats_host(gc.website_domain)
         OR util.is_career_host(gc.website_domain)
       )
   AND NOT EXISTS (
-        SELECT 1
-        FROM gold.company c2
+        SELECT 1 FROM gold.company c2
         WHERE c2.company_id <> gc.company_id
           AND c2.website_domain = lower(w.value)
           AND COALESCE(c2.brand_key,'') = COALESCE(gc.brand_key,'')
@@ -309,16 +390,13 @@ WHERE w.company_id = gc.company_id
   AND NOT util.is_ats_host(w.value)
   AND NOT util.is_career_host(w.value)
   AND NOT EXISTS (
-        SELECT 1
-        FROM gold.company c2
+        SELECT 1 FROM gold.company c2
         WHERE c2.company_id <> gc.company_id
           AND c2.website_domain = lower(w.value)
           AND COALESCE(c2.brand_key,'') = COALESCE(gc.brand_key,'')
       );
 
---------------------------------------------------------------------------------
--- 4) Aliases from unified_silver using same_org_domain for direct matches
---------------------------------------------------------------------------------
+-- 8) Aliases
 WITH map AS (
   SELECT
     s.company_raw AS company_name,
@@ -344,55 +422,60 @@ FROM map
 WHERE company_id IS NOT NULL
 ON CONFLICT (company_id, alias_norm) DO NOTHING;
 
---------------------------------------------------------------------------------
--- 5) LinkedIn company slug extraction from unified_silver
---------------------------------------------------------------------------------
-WITH linkedin_sources AS (
-  SELECT
-    util.company_name_norm(s.company_raw) AS name_norm,
-    COALESCE(s.company_linkedin_url, s.company_website) AS linkedin_url
-  FROM silver.unified_silver s
-  WHERE COALESCE(s.company_linkedin_url, s.company_website) ILIKE '%linkedin.com/company/%'
+-- 9) Cleanup merges (slug placeholders → domain twin, then pure placeholders → domain twin)
+WITH twins_slug AS (
+  SELECT p.company_id AS placeholder_id, d.company_id AS domain_id
+  FROM gold.company p
+  JOIN gold.company d
+    ON d.name_norm = p.name_norm
+   AND p.company_id <> d.company_id
+  JOIN (
+    SELECT name_norm, MIN(company_id) AS domain_id, COUNT(*) AS n
+    FROM gold.company
+    WHERE website_domain IS NOT NULL
+    GROUP BY name_norm
+  ) u ON u.name_norm = p.name_norm AND u.n = 1 AND u.domain_id = d.company_id
+  WHERE p.website_domain IS NULL
+    AND p.linkedin_slug IS NOT NULL
 ),
-slugs AS (
-  SELECT
-    name_norm,
-    lower(
-      regexp_replace(
-        linkedin_url,
-        E'^https?://[^/]*linkedin\\.com/company/([^/?#]+).*',
-        E'\\1'
-      )
-    ) AS slug
-  FROM linkedin_sources
-  WHERE name_norm IS NOT NULL
-    AND linkedin_url IS NOT NULL
+set_slug AS (
+  UPDATE gold.company d
+  SET linkedin_slug = COALESCE(d.linkedin_slug, p.linkedin_slug)
+  FROM twins_slug t
+  JOIN gold.company p ON p.company_id = t.placeholder_id
+  WHERE d.company_id = t.domain_id
+    AND p.linkedin_slug IS NOT NULL
+  RETURNING 1
 ),
-uniq_slugs AS (
-  SELECT
-    name_norm,
-    MIN(slug) AS slug
-  FROM slugs
-  WHERE slug IS NOT NULL
-  GROUP BY name_norm
+move_aliases_slug AS (
+  INSERT INTO gold.company_alias (company_id, alias)
+  SELECT t.domain_id, ca.alias
+  FROM twins_slug t
+  JOIN gold.company_alias ca ON ca.company_id = t.placeholder_id
+  ON CONFLICT (company_id, alias_norm) DO NOTHING
+  RETURNING 1
+),
+move_evidence_slug AS (
+  INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
+  SELECT t.domain_id, ce.kind, ce.value, ce.source, ce.source_id
+  FROM twins_slug t
+  JOIN gold.company_evidence_domain ce ON ce.company_id = t.placeholder_id
+  ON CONFLICT (company_id, kind, value) DO NOTHING
+  RETURNING 1
 )
-UPDATE gold.company gc
-SET linkedin_slug = us.slug
-FROM uniq_slugs us
-WHERE gc.name_norm = us.name_norm
-  AND gc.linkedin_slug IS DISTINCT FROM us.slug;
+DELETE FROM gold.company c
+USING twins_slug t
+WHERE c.company_id = t.placeholder_id;
 
---------------------------------------------------------------------------------
--- 6) Cleanup: merge placeholders (NULL domain) into the domain-resolved twin
---------------------------------------------------------------------------------
 WITH twins AS (
   SELECT a.company_id AS placeholder_id, b.company_id AS domain_id
   FROM gold.company a
   JOIN gold.company b
     ON a.name_norm = b.name_norm
    AND a.company_id <> b.company_id
-   AND a.website_domain IS NULL
-   AND b.website_domain IS NOT NULL
+  WHERE a.website_domain IS NULL
+    AND a.linkedin_slug IS NULL
+    AND b.website_domain IS NOT NULL
 ),
 moved_aliases AS (
   INSERT INTO gold.company_alias (company_id, alias)
