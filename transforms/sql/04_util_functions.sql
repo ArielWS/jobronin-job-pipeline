@@ -187,6 +187,7 @@ $$;
 
 -- Treat two inputs as the same org if their org roots match.
 -- Accepts raw domains or full URLs; compares util.org_domain(util.url_host(x)).
+DROP FUNCTION IF EXISTS util.same_org_domain(text, text);
 CREATE OR REPLACE FUNCTION util.same_org_domain(a text, b text)
 RETURNS boolean
 LANGUAGE sql
