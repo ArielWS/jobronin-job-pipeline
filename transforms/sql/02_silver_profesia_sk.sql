@@ -8,14 +8,13 @@ CREATE SCHEMA IF NOT EXISTS silver;
 CREATE OR REPLACE VIEW silver.profesia_sk AS
 WITH src AS (
   SELECT
-    -- No numeric id column provided in the DDL; use a stable hash if needed later
-    NULL::text                          AS bronze_id,
-    p.client_name                       AS client_name,
-    p."clientID"                        AS client_id,
-    p.search_term                       AS search_term,
-    p."location"                        AS bronze_location,
-    p.job_data                          AS job_data_txt,
-    p."timestamp"                       AS ts_raw
+    NULL::text                AS bronze_id,
+    p.client_name             AS client_name,
+    p."clientID"              AS client_id,
+    p.search_term             AS search_term,
+    p."location"              AS bronze_location,
+    p.job_data                AS job_data_txt,
+    p."timestamp"             AS ts_raw
   FROM public.profesiask_job_scrape p
 ),
 parsed AS (
@@ -29,11 +28,14 @@ fields AS (
     -- Source identity
     COALESCE(NULLIF(btrim(jd ->> 'id'), ''), NULLIF(btrim(jd #>> '{job,id}'), '')) AS json_id,
     NULLIF(btrim(COALESCE(jd ->> 'site', jd #>> '{job,site}')), '')                 AS source_site,
+
     -- Title/description
     NULLIF(btrim(COALESCE(jd ->> 'title', jd #>> '{job,title}', jd #>> '{header,title}')), '') AS title_raw,
     COALESCE(jd ->> 'description', jd #>> '{job,description}')                      AS description_raw,
+
     -- Company
     NULLIF(btrim(COALESCE(jd ->> 'company', jd #>> '{company,name}', jd #>> '{employer,name}')), '') AS company_raw,
+
     -- Location preference: job_location → location (json) → bronze
     NULLIF(
       btrim(
@@ -51,22 +53,27 @@ fields AS (
       ),
       ''
     ) AS location_raw,
-    -- Dates
+
+    -- Dates (text)
     NULLIF(jd ->> 'date_posted','')                                           AS date_posted_text,
     ts_raw                                                                     AS scraped_at_text,
+
     -- Work/contract
     NULLIF(jd ->> 'contract_type','')                                         AS contract_type_raw,
     NULLIF(jd ->> 'work_type','')                                             AS work_type_raw,
+
     -- Salary
     NULLIF(COALESCE(jd ->> 'min_amount', jd #>> '{salary,min}', jd ->> 'salaryMin'), '') AS salary_min_raw,
     NULLIF(COALESCE(jd ->> 'max_amount', jd #>> '{salary,max}', jd ->> 'salaryMax'), '') AS salary_max_raw,
     NULLIF(COALESCE(jd ->> 'currency',   jd #>> '{salary,currency}', jd ->> 'salaryCurrency'), '') AS currency_raw,
     NULLIF(COALESCE(jd ->> 'interval',   jd #>> '{salary,interval}', jd ->> 'salaryInterval'), '') AS salary_interval_raw,
+
     -- URLs (Profesia often only has listing URL; keep both slots)
     NULLIF(COALESCE(jd ->> 'job_url', jd ->> 'jobUrl', jd ->> 'url'), '')     AS job_url_raw,
     NULLIF(COALESCE(jd ->> 'job_url_direct', jd ->> 'applyUrl', jd ->> 'applicationUrl',
                     jd ->> 'job_url', jd ->> 'jobUrl', jd ->> 'url'), '')     AS apply_url_raw,
-    -- Company website if present in payload
+
+    -- Company website if present
     NULLIF(COALESCE(
       jd #>> '{company,website}',
       jd #>> '{company,homepage}',
@@ -74,11 +81,13 @@ fields AS (
       jd ->> 'companyWebsite',
       jd ->> 'homepage'
     ), '') AS company_website_raw,
+
     -- Company enrichment (best-effort)
     COALESCE(jd #>> '{company,industry}', jd #>> '{company_profile,industries}') AS company_industry_raw,
     COALESCE(jd #>> '{company,logo_url}', jd #>> '{company_profile,logo_url}')   AS company_logo_url,
     COALESCE(jd #>> '{company,address}',  jd #>> '{company_profile,address}')    AS company_location_raw,
-    -- Emails (string or array or contacts[].email / emailAddress)
+
+    -- Emails (string/array/contacts)
     NULLIF(btrim(
       (
         SELECT string_agg(DISTINCT e, '; ' ORDER BY e)
@@ -117,8 +126,19 @@ norm AS (
     util.url_canonical(COALESCE(f.job_url_raw, f.apply_url_raw)) AS source_row_url,
 
     -- Timestamps
-    CASE WHEN f.scraped_at_text IS NOT NULL THEN f.scraped_at_text::timestamptz ELSE NULL END AS scraped_at,
-    CASE WHEN f.date_posted_text IS NOT NULL THEN f.date_posted_text::date ELSE NULL END       AS date_posted,
+    CASE
+      WHEN f.scraped_at_text IS NOT NULL THEN f.scraped_at_text::timestamptz
+      ELSE NULL
+    END AS scraped_at,
+
+    -- Robust date_posted parsing: ISO (YYYY-MM-DD) or European "DD.MM.YYYY" (1/2 digits)
+    CASE
+      WHEN f.date_posted_text ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        THEN f.date_posted_text::date
+      WHEN regexp_replace(f.date_posted_text, '\s+', '', 'g') ~ '^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4}$'
+        THEN to_date(regexp_replace(f.date_posted_text, '\s+', '', 'g'), 'FMDD.FMMM.YYYY')
+      ELSE NULL
+    END AS date_posted,
 
     -- Titles
     f.title_raw,
@@ -229,7 +249,7 @@ dedup AS (
 SELECT
   source,
   source_site,
-  source_id,
+  COALESCE(source_id, md5(coalesce(job_url_canonical,'') || coalesce(title_raw,'') || coalesce(company_raw,'') || coalesce(location_raw,''))) AS source_id,
   source_row_url,
   scraped_at,
   date_posted,
