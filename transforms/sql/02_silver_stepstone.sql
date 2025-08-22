@@ -172,6 +172,9 @@ norm AS (
     f.source_site,
     f.source_id,
 
+    -- canonical pointer back to the source listing (prefer the listing URL)
+    util.url_canonical(COALESCE(f.job_url_raw, f.apply_url_raw)) AS source_row_url,
+
     -- timestamps
     CASE WHEN f.scraped_at_text IS NOT NULL THEN f.scraped_at_text::timestamptz ELSE NULL END AS scraped_at,
     CASE WHEN f.date_posted_text IS NOT NULL THEN f.date_posted_text::date ELSE NULL END       AS date_posted,
@@ -273,6 +276,7 @@ SELECT
   source,
   source_site,
   source_id,
+  source_row_url,
   scraped_at,
   date_posted,
 

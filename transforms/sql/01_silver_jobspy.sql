@@ -59,6 +59,8 @@ norm AS (
     'jobspy'::text                                 AS source,
     s.source_site,
     s.source_id,
+    -- canonical pointer back to the source listing (prefer the listing URL)
+    util.url_canonical(COALESCE(s.job_url_raw, s.apply_url_raw)) AS source_row_url,
     s.scraped_at,
     s.date_posted,
 
@@ -153,6 +155,7 @@ SELECT
   source,
   source_site,
   source_id,
+  source_row_url,
   scraped_at,
   date_posted,
 
