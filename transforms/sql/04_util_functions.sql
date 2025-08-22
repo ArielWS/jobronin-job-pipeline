@@ -180,7 +180,7 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL THEN FALSE
-  WHEN h ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.)' THEN TRUE
+  WHEN h ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.|(profesia\.sk)' THEN TRUE
   ELSE FALSE
 END
 $$;
@@ -298,7 +298,7 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL THEN FALSE
-  WHEN h ~ '(greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|bamboohr\.com|smartrecruiters\.com|recruitee\.com|ashbyhq\.com|jobs\.personio\.de|personio\.com|icims\.com|teamtailor\.com|taleo\.net|oraclecloud\.com|successfactors\.com|successfactors\.eu|brassring\.com|jobvite\.com|eightfold\.ai)'
+  WHEN h ~ '(greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|bamboohr\.com|smartrecruiters\.com|recruitee\.com|ashbyhq\.com|jobs\.personio\.de|personio\.com|icims\.com|teamtailor\.com|taleo\.net|oraclecloud\.com|successfactors\.com|successfactors\.eu|brassring\.com|jobvite\.com|eightfold\.ai|avature.net|grnh.se|recruit\.zoho\.com|snaphunt\.com)'
     THEN TRUE
   ELSE FALSE
 END
@@ -314,6 +314,7 @@ SELECT CASE
   WHEN h IS NULL OR btrim(h) = '' THEN FALSE
   WHEN h ~ '\.jobs$'                  THEN TRUE
   WHEN h ~ '(^|[.-])careers?([.-]|$)' THEN TRUE
+  WHEN h ~ '(^|[.-])jobs([.-]|$)'     THEN TRUE
   ELSE FALSE
 END
 $$;
