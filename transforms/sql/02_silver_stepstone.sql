@@ -23,79 +23,29 @@ parsed AS (
     util.json_clean(s.job_data_txt) AS jd
   FROM src s
 ),
-emails AS (
-  SELECT
-    p.bronze_id,
-    NULLIF(
-      btrim(
-        (
-          SELECT string_agg(DISTINCT x.e, '; ' ORDER BY x.e)
-          FROM (
-            -- explicit "emails" field (string or array)
-            SELECT NULLIF(btrim(e1), '') AS e
-            FROM (
-              SELECT unnest(
-                CASE
-                  WHEN jsonb_typeof(p.jd -> 'emails') = 'array'
-                    THEN ARRAY(SELECT jsonb_array_elements_text(p.jd -> 'emails'))
-                  WHEN jsonb_typeof(p.jd -> 'emails') = 'string'
-                    THEN string_to_array(p.jd ->> 'emails', ',')
-                  ELSE ARRAY[]::text[]
-                END
-              )
-            ) AS t(e1)
-
-            UNION ALL
-
-            -- contacts[].emailAddress
-            SELECT NULLIF(btrim(c ->> 'emailAddress'), '')
-            FROM jsonb_array_elements(
-              CASE
-                WHEN jsonb_typeof(p.jd -> 'contacts') = 'array'
-                  THEN p.jd -> 'contacts'
-                ELSE '[]'::jsonb
-              END
-            ) c
-
-            UNION ALL
-
-            -- contacts[].email
-            SELECT NULLIF(btrim(c2 ->> 'email'), '')
-            FROM jsonb_array_elements(
-              CASE
-                WHEN jsonb_typeof(p.jd -> 'contacts') = 'array'
-                  THEN p.jd -> 'contacts'
-                ELSE '[]'::jsonb
-              END
-            ) c2
-          ) x
-          WHERE x.e IS NOT NULL
-        )
-      ),
-      ''
-    ) AS emails_raw
-  FROM parsed p
-),
 fields AS (
   SELECT
     p.bronze_id AS source_id,
+
+    -- Site label (e.g., "Stepstone DE")
     NULLIF(btrim(COALESCE(p.jd ->> 'site', p.jd #>> '{job,site}')), '') AS source_site,
 
+    -- Titles / description
     NULLIF(btrim(COALESCE(
-      p.jd ->> 'title',
       p.jd #>> '{job,title}',
-      p.jd #>> '{header,title}'
+      p.jd #>> '{header,title}',
+      p.jd ->> 'title'
     )), '') AS title_raw,
-
     COALESCE(p.jd ->> 'description', p.jd #>> '{job,description}') AS description_raw,
 
-    -- company: prefer top-level "company"; fallback to company_profile.name
+    -- Company name (prefer top-level; fallback to company_profile.name / company.name)
     NULLIF(btrim(COALESCE(
       p.jd ->> 'company',
-      p.jd #>> '{company_profile,name}'
+      p.jd #>> '{company_profile,name}',
+      p.jd #>> '{company,name}'
     )), '') AS company_raw,
 
-    -- location preference: job_location → location → bronze
+    -- Location: job_location (array|string) → location → bronze
     NULLIF(
       btrim(
         COALESCE(
@@ -113,23 +63,24 @@ fields AS (
       ), ''
     ) AS location_raw,
 
-    -- dates
-    NULLIF(p.jd ->> 'date_posted', '') AS date_posted_text,
+    -- Dates (text)
+    COALESCE(p.jd ->> 'date_posted', p.jd ->> 'publicationDate', p.jd #>> '{job,publicationDate}') AS date_posted_text,
     p.ts_raw AS scraped_at_text,
 
-    -- work/contract meta
-    NULLIF(p.jd ->> 'work_type', '')    AS work_type_raw,
-    NULLIF(p.jd ->> 'job_type', '')     AS job_type_raw,
-    NULLIF(p.jd ->> 'job_function', '') AS job_function_raw,
-    NULLIF(COALESCE(p.jd ->> 'contract_type', p.jd #>> '{job,contractType}'), '') AS contract_type_raw,
+    -- Work / contract meta
+    NULLIF(p.jd ->> 'work_type','')    AS work_type_raw,
+    NULLIF(p.jd ->> 'job_type','')     AS job_type_raw,
+    NULLIF(p.jd ->> 'job_function','') AS job_function_raw,
+    NULLIF(COALESCE(p.jd ->> 'contract_type', p.jd #>> '{job,contractType}'),'') AS contract_type_raw,
 
-    -- salary
-    NULLIF(COALESCE(p.jd ->> 'min_amount', p.jd #>> '{salary,min}', p.jd ->> 'salaryMin'), '') AS salary_min_raw,
-    NULLIF(COALESCE(p.jd ->> 'max_amount', p.jd #>> '{salary,max}', p.jd ->> 'salaryMax'), '') AS salary_max_raw,
-    NULLIF(COALESCE(p.jd ->> 'currency', p.jd #>> '{salary,currency}', p.jd ->> 'salaryCurrency'), '') AS currency_raw,
-    NULLIF(COALESCE(p.jd ->> 'interval', p.jd #>> '{salary,interval}', p.jd ->> 'salaryInterval'), '') AS salary_interval_raw,
+    -- Salary (common shapes)
+    NULLIF(COALESCE(p.jd ->> 'salaryMin', p.jd #>> '{salary,min}', p.jd ->> 'min_amount', p.jd #>> '{salary,min_amount}'), '') AS salary_min_raw,
+    NULLIF(COALESCE(p.jd ->> 'salaryMax', p.jd #>> '{salary,max}', p.jd ->> 'max_amount', p.jd #>> '{salary,max_amount}'), '') AS salary_max_raw,
+    NULLIF(COALESCE(p.jd ->> 'salaryCurrency', p.jd #>> '{salary,currency}', p.jd ->> 'currency'), '') AS salary_currency_raw,
+    NULLIF(COALESCE(p.jd ->> 'salaryInterval', p.jd #>> '{salary,interval}', p.jd ->> 'interval'), '') AS salary_interval_raw,
+    NULLIF(COALESCE(p.jd ->> 'salarySource', p.jd #>> '{salary,source}', p.jd ->> 'salary_source'), '') AS salary_source_raw,
 
-    -- URLs
+    -- URLs (listing / apply)
     NULLIF(COALESCE(
       p.jd ->> 'job_url',
       p.jd ->> 'jobUrl',
@@ -145,6 +96,7 @@ fields AS (
       p.jd ->> 'url'
     ), '') AS apply_url_raw,
 
+    -- Company website / enrichment
     NULLIF(COALESCE(
       p.jd #>> '{company_profile,website}',
       p.jd #>> '{company,website}',
@@ -155,61 +107,134 @@ fields AS (
       p.jd ->> 'homepage'
     ), '') AS company_website_raw,
 
-    -- company enrichment
-    COALESCE(
-      p.jd #>> '{company_profile,industries}',
-      p.jd #>> '{industry,name}'
-    ) AS company_industry_raw,
-    p.jd #>> '{company_profile,logo_url}'  AS company_logo_url,
-    p.jd #>> '{company_profile,address}'   AS company_location_raw
+    COALESCE(p.jd #>> '{company,size}', p.jd ->> 'companySize', p.jd #>> '{company_profile,employees}') AS company_size_raw,
+    COALESCE(p.jd #>> '{company,industry}', p.jd #>> '{industry,name}', p.jd #>> '{company_profile,industries}') AS company_industry_raw,
+    COALESCE(p.jd #>> '{company,logoUrl}', p.jd ->> 'companyLogoUrl', p.jd #>> '{company_profile,logo_url}') AS company_logo_url,
+    COALESCE(p.jd ->> 'companyDescription', p.jd #>> '{company,description}') AS company_description_raw,
+    p.jd #>> '{company_profile,address}'      AS company_address_raw,
+    p.jd #>> '{company_profile,stepstone_id}' AS company_stepstone_id,
+    p.jd #>> '{company_profile,active_jobs}'  AS company_active_jobs,
+    p.jd #>> '{company_profile,hero_url}'     AS company_hero_url,
+    p.jd #>> '{company_profile,founded}'      AS company_founded_year_raw,
+
+    -- External identifiers (passthrough)
+    p.jd ->> 'external_id' AS external_id_raw,
+    p.jd ->> 'listing_id'  AS listing_id_raw
 
   FROM parsed p
-  LEFT JOIN emails e ON e.bronze_id = p.bronze_id
+  LEFT JOIN LATERAL (
+    SELECT
+      -- All emails collected from multiple shapes
+      (
+        SELECT ARRAY(
+          SELECT DISTINCT e
+          FROM (
+            -- explicit "emails" field (array or string)
+            SELECT NULLIF(btrim(x), '') AS e
+            FROM (
+              SELECT unnest(
+                CASE
+                  WHEN jsonb_typeof(p.jd -> 'emails') = 'array'
+                    THEN ARRAY(SELECT jsonb_array_elements_text(p.jd -> 'emails'))
+                  WHEN jsonb_typeof(p.jd -> 'emails') = 'string'
+                    THEN string_to_array(p.jd ->> 'emails', ',')
+                  ELSE ARRAY[]::text[]
+                END
+              )
+            ) q(x)
+            UNION ALL
+            -- contacts[].email / emailAddress
+            SELECT NULLIF(btrim(c ->> 'email'), '')
+            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.jd -> 'contacts') = 'array' THEN p.jd -> 'contacts' ELSE '[]'::jsonb END) c
+            UNION ALL
+            SELECT NULLIF(btrim(c2 ->> 'emailAddress'), '')
+            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.jd -> 'contacts') = 'array' THEN p.jd -> 'contacts' ELSE '[]'::jsonb END) c2
+          ) z
+          WHERE e IS NOT NULL
+        )
+      ) AS emails_all,
+
+      -- Raw contacts JSON
+      CASE
+        WHEN jsonb_typeof(p.jd -> 'contacts') IN ('array','object') THEN p.jd -> 'contacts'
+        ELSE NULL
+      END AS contacts_raw,
+
+      -- First contact person (personName/name/person)
+      (
+        SELECT NULLIF(btrim(val), '')
+        FROM (
+          SELECT COALESCE(c ->> 'personName', c ->> 'name', c ->> 'person') AS val
+          FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.jd -> 'contacts') = 'array' THEN p.jd -> 'contacts' ELSE '[]'::jsonb END) c
+          WHERE COALESCE(c ->> 'personName', c ->> 'name', c ->> 'person') IS NOT NULL
+          LIMIT 1
+        ) s1
+      ) AS contact_person_raw,
+
+      -- First contact phone (phone/telephone/tel/mobile/phoneNumber)
+      (
+        SELECT NULLIF(btrim(val), '')
+        FROM (
+          SELECT COALESCE(c ->> 'phone', c ->> 'telephone', c ->> 'tel', c ->> 'mobile', c ->> 'phoneNumber') AS val
+          FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.jd -> 'contacts') = 'array' THEN p.jd -> 'contacts' ELSE '[]'::jsonb END) c
+          WHERE COALESCE(c ->> 'phone', c ->> 'telephone', c ->> 'tel', c ->> 'mobile', c ->> 'phoneNumber') IS NOT NULL
+          LIMIT 1
+        ) s2
+      ) AS contact_phone_raw
+  ) c ON TRUE
 ),
 norm AS (
   SELECT
-    'stepstone'::text                                   AS source,
+    'stepstone'::text AS source,
     f.source_site,
     f.source_id,
 
-    -- canonical pointer back to the source listing (prefer the listing URL)
+    -- Stable pointer back to listing
     util.url_canonical(COALESCE(f.job_url_raw, f.apply_url_raw)) AS source_row_url,
 
-    -- timestamps
+    -- Timestamps
     CASE WHEN f.scraped_at_text IS NOT NULL THEN f.scraped_at_text::timestamptz ELSE NULL END AS scraped_at,
-    CASE WHEN f.date_posted_text IS NOT NULL THEN f.date_posted_text::date ELSE NULL END       AS date_posted,
+    CASE
+      WHEN f.date_posted_text ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN f.date_posted_text::date
+      WHEN regexp_replace(f.date_posted_text, '\s+', '', 'g') ~ '^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4}$'
+        THEN to_date(regexp_replace(f.date_posted_text, '\s+', '', 'g'), 'FMDD.FMMM.YYYY')
+      ELSE NULL
+    END AS date_posted,
 
-    -- titles
+    -- Titles
     f.title_raw,
-    NULL::text                                          AS title_norm,
+    NULL::text AS title_norm,
 
-    -- company names
+    -- Company names (raw + normalized variants)
     f.company_raw,
-    util.company_name_norm_langless(f.company_raw)       AS company_name_norm_langless,
-    util.company_name_norm(f.company_raw)                AS company_name_norm,
+    util.company_name_norm_langless(f.company_raw) AS company_name_norm_langless,
+    util.company_name_norm(f.company_raw)          AS company_name_norm,
 
-    -- content
+    -- Content
     f.description_raw,
 
-    -- location
+    -- Location
     f.location_raw,
-    lp.city                                              AS city_guess,
-    lp.region                                            AS region_guess,
-    lp.country                                           AS country_guess,
+    lp.city    AS city_guess,
+    lp.region  AS region_guess,
+    lp.country AS country_guess,
 
-    -- job meta
+    -- Job meta
     f.contract_type_raw,
     CASE
-      WHEN f.work_type_raw ILIKE '%homeoffice%' OR f.work_type_raw ILIKE '%remote%'
-        OR f.title_raw ILIKE '%remote%'
-      THEN TRUE
+      WHEN f.work_type_raw ILIKE '%remote%' THEN TRUE
+      WHEN f.work_type_raw ILIKE '%home office%' OR f.work_type_raw ILIKE '%homeoffice%' THEN TRUE
+      WHEN f.work_type_raw ILIKE '%hybrid%' THEN TRUE
+      WHEN f.title_raw ILIKE '%remote%' OR f.location_raw ILIKE '%remote%' THEN TRUE
+      WHEN f.description_raw ILIKE '%homeoffice%' OR f.description_raw ILIKE '%home office%' THEN TRUE
+      WHEN f.description_raw ILIKE '%hybrid%' THEN TRUE
       ELSE NULL
-    END                                                  AS is_remote,
+    END AS is_remote,
 
-    -- compensation
+    -- Compensation
     CASE WHEN f.salary_min_raw ~ '^-?[0-9]+(\.[0-9]+)?$' THEN f.salary_min_raw::numeric ELSE NULL END AS salary_min,
     CASE WHEN f.salary_max_raw ~ '^-?[0-9]+(\.[0-9]+)?$' THEN f.salary_max_raw::numeric ELSE NULL END AS salary_max,
-    NULLIF(f.currency_raw,'')                            AS currency,
+    NULLIF(f.salary_currency_raw,'') AS currency,
     CASE
       WHEN f.salary_interval_raw ILIKE 'hour%'  THEN 'hourly'
       WHEN f.salary_interval_raw ILIKE 'day%'   THEN 'daily'
@@ -217,60 +242,176 @@ norm AS (
       WHEN f.salary_interval_raw ILIKE 'month%' THEN 'monthly'
       WHEN f.salary_interval_raw ILIKE 'year%'  THEN 'yearly'
       ELSE NULL
-    END                                                  AS salary_interval,
+    END AS salary_interval,
+    NULLIF(f.salary_source_raw,'') AS salary_source,
 
-    -- listing URL
-    f.job_url_raw                                        AS job_url_raw,
-    util.url_canonical(f.job_url_raw)                    AS job_url_canonical,
+    -- Listing URL
+    f.job_url_raw                                AS job_url_raw,
+    util.url_canonical(f.job_url_raw)            AS job_url_canonical,
     (regexp_match(coalesce(util.url_canonical(f.job_url_raw),''), '/jobs/view/([0-9]+)'))[1] AS linkedin_job_id,
 
-    -- apply URL
-    COALESCE(f.apply_url_raw, f.job_url_raw)             AS apply_url_raw,
+    -- Apply URL
+    COALESCE(f.apply_url_raw, f.job_url_raw)     AS apply_url_raw,
     util.url_canonical(COALESCE(f.apply_url_raw, f.job_url_raw)) AS apply_url_canonical,
-    util.url_host(util.url_canonical(COALESCE(f.apply_url_raw, f.job_url_raw)))               AS apply_domain,
+    util.url_host(util.url_canonical(COALESCE(f.apply_url_raw, f.job_url_raw)))              AS apply_domain,
     util.org_domain(util.url_host(util.url_canonical(COALESCE(f.apply_url_raw, f.job_url_raw)))) AS apply_root,
 
-    -- company website (filter aggregator/ATS/career)
+    -- Company website (filter aggregator/ATS/career)
     f.company_website_raw,
-    util.url_canonical(f.company_website_raw)            AS company_website_canonical,
+    util.url_canonical(f.company_website_raw)    AS company_website_canonical,
     CASE
       WHEN util.url_host(util.url_canonical(f.company_website_raw)) = 'linkedin.com'
         THEN util.url_canonical(f.company_website_raw)
       ELSE NULL
-    END                                                  AS company_linkedin_url,
+    END AS company_linkedin_url,
     CASE
       WHEN util.is_aggregator_host(util.url_host(util.url_canonical(f.company_website_raw))) THEN NULL
       WHEN util.is_ats_host(util.url_host(util.url_canonical(f.company_website_raw)))        THEN NULL
       WHEN util.is_career_host(util.url_host(util.url_canonical(f.company_website_raw)))     THEN NULL
       ELSE util.url_canonical(f.company_website_raw)
-    END                                                  AS company_website,
+    END AS company_website,
     CASE
       WHEN util.is_aggregator_host(util.url_host(util.url_canonical(f.company_website_raw))) THEN NULL
       WHEN util.is_ats_host(util.url_host(util.url_canonical(f.company_website_raw)))        THEN NULL
       WHEN util.is_career_host(util.url_host(util.url_canonical(f.company_website_raw)))     THEN NULL
       ELSE util.org_domain(util.url_host(util.url_canonical(f.company_website_raw)))
-    END                                                  AS company_domain,
+    END AS company_domain,
 
-    -- emails → contact evidence
-    e.emails_raw,
+    -- Emails → aggregated string + domains
     CASE
-      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(e.emails_raw))) THEN NULL
-      ELSE util.email_domain(util.first_email(e.emails_raw))
-    END                                                  AS contact_email_domain,
+      WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL THEN NULL
+      ELSE array_to_string(c.emails_all, '; ')
+    END AS emails_raw,
+    c.emails_all,
     CASE
-      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(e.emails_raw))) THEN NULL
-      ELSE util.org_domain(util.email_domain(util.first_email(e.emails_raw)))
-    END                                                  AS contact_email_root,
+      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(
+           CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+                THEN NULL
+                ELSE array_to_string(c.emails_all, '; ')
+           END)))
+      THEN NULL
+      ELSE util.email_domain(util.first_email(
+             CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+                  THEN NULL
+                  ELSE array_to_string(c.emails_all, '; ')
+             END))
+    END AS contact_email_domain,
+    CASE
+      WHEN util.is_generic_email_domain(util.email_domain(util.first_email(
+           CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+                THEN NULL
+                ELSE array_to_string(c.emails_all, '; ')
+           END)))
+      THEN NULL
+      ELSE util.org_domain(util.email_domain(util.first_email(
+             CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+                  THEN NULL
+                  ELSE array_to_string(c.emails_all, '; ')
+             END)))
+    END AS contact_email_root,
 
-    -- enrichment passthroughs
+    -- Contacts
+    c.contacts_raw,
+    c.contact_person_raw,
+    c.contact_phone_raw,
+
+    -- Company enrichment passthroughs
+    f.company_size_raw,
     f.company_industry_raw,
     f.company_logo_url,
-    NULL::text                                           AS company_description_raw,
-    f.company_location_raw
+    f.company_description_raw,
+    f.company_address_raw,
+    f.company_stepstone_id,
+    f.company_active_jobs,
+    f.company_hero_url,
+    CASE
+      WHEN f.company_founded_year_raw ~ '^[0-9]{4}$' THEN (f.company_founded_year_raw)::int
+      ELSE NULL
+    END AS company_founded_year,
+
+    -- External ids passthrough
+    f.external_id_raw,
+    f.listing_id_raw
 
   FROM fields f
-  LEFT JOIN emails e ON e.bronze_id = f.source_id
   LEFT JOIN LATERAL util.location_parse(f.location_raw) lp ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT * FROM (
+      SELECT
+        -- re-expose the LATERAL columns from fields' join via correlated subselect
+        (SELECT (SELECT ARRAY(
+                   SELECT DISTINCT e
+                   FROM (
+                     SELECT NULLIF(btrim(x), '') AS e
+                     FROM (
+                       SELECT unnest(
+                         CASE
+                           WHEN jsonb_typeof(f.j d) = 'object'
+                             THEN CASE
+                                    WHEN jsonb_typeof(f.j d -> 'emails') = 'array'
+                                      THEN ARRAY(SELECT jsonb_array_elements_text(f.j d -> 'emails'))
+                                    WHEN jsonb_typeof(f.j d -> 'emails') = 'string'
+                                      THEN string_to_array(f.j d ->> 'emails', ',')
+                                    ELSE ARRAY[]::text[]
+                                  END
+                                   
+                           ELSE ARRAY[]::text[]
+                         END
+                       )
+                     ) q(x)
+                     UNION ALL
+                     SELECT NULLIF(btrim(c ->> 'email'), '')
+                     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c
+                     UNION ALL
+                     SELECT NULLIF(btrim(c2 ->> 'emailAddress'), '')
+                     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c2
+                   ) z
+                   WHERE e IS NOT NULL
+                 ))) AS emails_all,
+
+        CASE
+          WHEN jsonb_typeof(f.j d -> 'contacts') IN ('array','object') THEN f.j d -> 'contacts'
+          ELSE NULL
+        END AS contacts_raw,
+
+        (SELECT NULLIF(btrim(val), '')
+         FROM (
+           SELECT COALESCE(c ->> 'personName', c ->> 'name', c ->> 'person') AS val
+           FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c
+           WHERE COALESCE(c ->> 'personName', c ->> 'name', c ->> 'person') IS NOT NULL
+           LIMIT 1
+         ) s1) AS contact_person_raw,
+
+        (SELECT NULLIF(btrim(val), '')
+         FROM (
+           SELECT COALESCE(c ->> 'phone', c ->> 'telephone', c ->> 'tel', c ->> 'mobile', c ->> 'phoneNumber') AS val
+           FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c
+           WHERE COALESCE(c ->> 'phone', c ->> 'telephone', c ->> 'tel', c ->> 'mobile', c ->> 'phoneNumber') IS NOT NULL
+           LIMIT 1
+         ) s2) AS contact_phone_raw
+    ) _dummy
+  ) c2 ON FALSE  -- no-op join to keep query stable if planner inlines; safe to ignore
+)
+, keep AS (
+  -- Stronger junk filter & normalization already applied; just pass through
+  SELECT * FROM norm
+),
+keys AS (
+  -- Dedup within StepStone: prefer job_url_canonical → apply_url_canonical → content hash
+  SELECT
+    k.*,
+    COALESCE(
+      k.job_url_canonical,
+      k.apply_url_canonical,
+      'hash:' || md5(coalesce(k.title_raw,'') || '|' || coalesce(k.company_raw,'') || '|' || coalesce(k.location_raw,''))
+    ) AS dedup_key
+  FROM keep k
+),
+dedup AS (
+  SELECT DISTINCT ON (dedup_key)
+    *
+  FROM keys
+  ORDER BY dedup_key, scraped_at DESC NULLS LAST, date_posted DESC NULLS LAST
 )
 SELECT
   source,
@@ -301,6 +442,7 @@ SELECT
   salary_max,
   currency,
   salary_interval,
+  salary_source,
 
   job_url_raw,
   job_url_canonical,
@@ -318,11 +460,23 @@ SELECT
   company_domain,
 
   emails_raw,
+  emails_all,
   contact_email_domain,
   contact_email_root,
+  contacts_raw,
+  contact_person_raw,
+  contact_phone_raw,
 
+  company_size_raw,
   company_industry_raw,
   company_logo_url,
   company_description_raw,
-  company_location_raw
-FROM norm;
+  company_address_raw,
+  company_stepstone_id,
+  company_active_jobs,
+  company_hero_url,
+  company_founded_year,
+
+  external_id_raw,
+  listing_id_raw
+FROM dedup;
