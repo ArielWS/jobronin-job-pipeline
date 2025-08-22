@@ -163,17 +163,16 @@ slug_map AS (
 ),
 anchored_resolved AS (
   SELECT
-    s.name_norm,
+    r.name_norm,
     COALESCE(dm.company_id, sm.company_id) AS company_id,
-    s.city_guess, s.region_guess, s.country_guess
-  FROM src s
-  LEFT JOIN domain_map dm ON dm.website_domain = s.org_root
-  LEFT JOIN slug_map   sm ON sm.slug = s.linkedin_slug
+    r.city_guess, r.region_guess, r.country_guess
+  FROM rooted r
+  LEFT JOIN domain_map dm ON dm.website_domain = r.org_root
+  LEFT JOIN slug_map   sm ON sm.slug = r.linkedin_slug
   WHERE dm.company_id IS NOT NULL OR sm.company_id IS NOT NULL
 ),
 
--- 3) NAME-LAST placeholders (we'll only create after richer tries fail)
---    But first, build our final row->company resolution with extended logic.
+-- 3) Final resolution priority per row
 resolved AS (
   SELECT
     s.source, s.source_id, s.source_row_url,
@@ -184,14 +183,6 @@ resolved AS (
     s.stepstone_id,
     s.loc_text,
     s.city_guess, s.region_guess, s.country_guess,
-
-    /* Resolution priority:
-       1) Domain root
-       2) LinkedIn slug
-       3) StepStone company id (from evidence)
-       4) Name + geo match to an anchored company in this run (same name_norm & any geo equal)
-       5) Any existing company with same name_norm (prefer domain rows)
-    */
     COALESCE(
       -- (1) by domain
       (SELECT gc.company_id
@@ -199,14 +190,12 @@ resolved AS (
         WHERE gc.website_domain IS NOT NULL
           AND gc.website_domain = s.org_root
         LIMIT 1),
-
       -- (2) by linkedin slug
       (SELECT gc.company_id
          FROM gold.company gc
         WHERE s.linkedin_slug IS NOT NULL
           AND lower(gc.linkedin_slug) = s.linkedin_slug
         LIMIT 1),
-
       -- (3) by stepstone id evidence
       (SELECT ced.company_id
          FROM gold.company_evidence_domain ced
@@ -214,7 +203,6 @@ resolved AS (
           AND ced.kind = 'stepstone_id'
           AND lower(ced.value) = lower(s.stepstone_id)
         LIMIT 1),
-
       -- (4) by name + geo to an anchored company (unique candidate)
       (SELECT ar.company_id
          FROM anchored_resolved ar
@@ -227,7 +215,6 @@ resolved AS (
         GROUP BY ar.company_id
         HAVING COUNT(*) >= 1
         LIMIT 1),
-
       -- (5) by name_norm (prefer those with domain)
       (SELECT gc2.company_id
          FROM gold.company gc2
@@ -238,7 +225,7 @@ resolved AS (
   FROM rooted s
 ),
 
--- 4) Insert NAME-ONLY placeholders only when no resolvable id yet
+-- 4) Insert NAME-ONLY placeholders where needed
 ins_placeholders AS (
   INSERT INTO gold.company AS gc (name)
   SELECT DISTINCT r.company_name
@@ -344,9 +331,11 @@ upd_profile AS (
   WHERE gc.company_id = pb.company_id
   RETURNING 1
 )
+-- IMPORTANT: close the WITH-chain with a terminal statement
+SELECT 1;
 
 -- 7) Promote website_domain from WEBSITE evidence (trustworthy > email)
-; UPDATE gold.company gc
+UPDATE gold.company gc
 SET website_domain = lower(w.value)
 FROM (
     SELECT DISTINCT ON (ed.value, COALESCE(c.brand_key,''))
