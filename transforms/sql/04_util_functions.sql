@@ -180,7 +180,7 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL THEN FALSE
-  WHEN h ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.|(profesia\.sk)' THEN TRUE
+  WHEN h ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.)|(profesia\.sk)' THEN TRUE
   ELSE FALSE
 END
 $$;
