@@ -119,7 +119,13 @@ fields AS (
 
     -- External identifiers (passthrough)
     p.jd ->> 'external_id' AS external_id_raw,
-    p.jd ->> 'listing_id'  AS listing_id_raw
+    p.jd ->> 'listing_id'  AS listing_id_raw,
+
+    -- LATERAL-extracted contacts & emails (projected so downstream CTEs can use them)
+    c.emails_all,
+    c.contacts_raw,
+    c.contact_person_raw,
+    c.contact_phone_raw
 
   FROM parsed p
   LEFT JOIN LATERAL (
@@ -144,8 +150,8 @@ fields AS (
             ) q(x)
             UNION ALL
             -- contacts[].email / emailAddress
-            SELECT NULLIF(btrim(c ->> 'email'), '')
-            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.jd -> 'contacts') = 'array' THEN p.jd -> 'contacts' ELSE '[]'::jsonb END) c
+            SELECT NULLIF(btrim(c1 ->> 'email'), '')
+            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.jd -> 'contacts') = 'array' THEN p.jd -> 'contacts' ELSE '[]'::jsonb END) c1
             UNION ALL
             SELECT NULLIF(btrim(c2 ->> 'emailAddress'), '')
             FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.jd -> 'contacts') = 'array' THEN p.jd -> 'contacts' ELSE '[]'::jsonb END) c2
@@ -279,41 +285,41 @@ norm AS (
 
     -- Emails → aggregated string + domains
     CASE
-      WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL THEN NULL
-      ELSE array_to_string(c.emails_all, '; ')
+      WHEN f.emails_all IS NULL OR array_length(f.emails_all,1) IS NULL THEN NULL
+      ELSE array_to_string(f.emails_all, '; ')
     END AS emails_raw,
-    c.emails_all,
+    f.emails_all,
     CASE
       WHEN util.is_generic_email_domain(util.email_domain(util.first_email(
-           CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+           CASE WHEN f.emails_all IS NULL OR array_length(f.emails_all,1) IS NULL
                 THEN NULL
-                ELSE array_to_string(c.emails_all, '; ')
+                ELSE array_to_string(f.emails_all, '; ')
            END)))
       THEN NULL
       ELSE util.email_domain(util.first_email(
-             CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+             CASE WHEN f.emails_all IS NULL OR array_length(f.emails_all,1) IS NULL
                   THEN NULL
-                  ELSE array_to_string(c.emails_all, '; ')
+                  ELSE array_to_string(f.emails_all, '; ')
              END))
     END AS contact_email_domain,
     CASE
       WHEN util.is_generic_email_domain(util.email_domain(util.first_email(
-           CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+           CASE WHEN f.emails_all IS NULL OR array_length(f.emails_all,1) IS NULL
                 THEN NULL
-                ELSE array_to_string(c.emails_all, '; ')
+                ELSE array_to_string(f.emails_all, '; ')
            END)))
       THEN NULL
       ELSE util.org_domain(util.email_domain(util.first_email(
-             CASE WHEN c.emails_all IS NULL OR array_length(c.emails_all,1) IS NULL
+             CASE WHEN f.emails_all IS NULL OR array_length(f.emails_all,1) IS NULL
                   THEN NULL
-                  ELSE array_to_string(c.emails_all, '; ')
+                  ELSE array_to_string(f.emails_all, '; ')
              END)))
     END AS contact_email_root,
 
     -- Contacts
-    c.contacts_raw,
-    c.contact_person_raw,
-    c.contact_phone_raw,
+    f.contacts_raw,
+    f.contact_person_raw,
+    f.contact_phone_raw,
 
     -- Company enrichment passthroughs
     f.company_size_raw,
@@ -335,69 +341,9 @@ norm AS (
 
   FROM fields f
   LEFT JOIN LATERAL util.location_parse(f.location_raw) lp ON TRUE
-  LEFT JOIN LATERAL (
-    SELECT * FROM (
-      SELECT
-        -- re-expose the LATERAL columns from fields' join via correlated subselect
-        (SELECT (SELECT ARRAY(
-                   SELECT DISTINCT e
-                   FROM (
-                     SELECT NULLIF(btrim(x), '') AS e
-                     FROM (
-                       SELECT unnest(
-                         CASE
-                           WHEN jsonb_typeof(f.j d) = 'object'
-                             THEN CASE
-                                    WHEN jsonb_typeof(f.j d -> 'emails') = 'array'
-                                      THEN ARRAY(SELECT jsonb_array_elements_text(f.j d -> 'emails'))
-                                    WHEN jsonb_typeof(f.j d -> 'emails') = 'string'
-                                      THEN string_to_array(f.j d ->> 'emails', ',')
-                                    ELSE ARRAY[]::text[]
-                                  END
-                                   
-                           ELSE ARRAY[]::text[]
-                         END
-                       )
-                     ) q(x)
-                     UNION ALL
-                     SELECT NULLIF(btrim(c ->> 'email'), '')
-                     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c
-                     UNION ALL
-                     SELECT NULLIF(btrim(c2 ->> 'emailAddress'), '')
-                     FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c2
-                   ) z
-                   WHERE e IS NOT NULL
-                 ))) AS emails_all,
-
-        CASE
-          WHEN jsonb_typeof(f.j d -> 'contacts') IN ('array','object') THEN f.j d -> 'contacts'
-          ELSE NULL
-        END AS contacts_raw,
-
-        (SELECT NULLIF(btrim(val), '')
-         FROM (
-           SELECT COALESCE(c ->> 'personName', c ->> 'name', c ->> 'person') AS val
-           FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c
-           WHERE COALESCE(c ->> 'personName', c ->> 'name', c ->> 'person') IS NOT NULL
-           LIMIT 1
-         ) s1) AS contact_person_raw,
-
-        (SELECT NULLIF(btrim(val), '')
-         FROM (
-           SELECT COALESCE(c ->> 'phone', c ->> 'telephone', c ->> 'tel', c ->> 'mobile', c ->> 'phoneNumber') AS val
-           FROM jsonb_array_elements(CASE WHEN jsonb_typeof(f.j d -> 'contacts') = 'array' THEN f.j d -> 'contacts' ELSE '[]'::jsonb END) c
-           WHERE COALESCE(c ->> 'phone', c ->> 'telephone', c ->> 'tel', c ->> 'mobile', c ->> 'phoneNumber') IS NOT NULL
-           LIMIT 1
-         ) s2) AS contact_phone_raw
-    ) _dummy
-  ) c2 ON FALSE  -- no-op join to keep query stable if planner inlines; safe to ignore
-)
-, keep AS (
-  -- Stronger junk filter & normalization already applied; just pass through
-  SELECT * FROM norm
 ),
+-- Dedup within StepStone: prefer job_url_canonical → apply_url_canonical → content hash
 keys AS (
-  -- Dedup within StepStone: prefer job_url_canonical → apply_url_canonical → content hash
   SELECT
     k.*,
     COALESCE(
@@ -405,7 +351,7 @@ keys AS (
       k.apply_url_canonical,
       'hash:' || md5(coalesce(k.title_raw,'') || '|' || coalesce(k.company_raw,'') || '|' || coalesce(k.location_raw,''))
     ) AS dedup_key
-  FROM keep k
+  FROM norm k
 ),
 dedup AS (
   SELECT DISTINCT ON (dedup_key)
