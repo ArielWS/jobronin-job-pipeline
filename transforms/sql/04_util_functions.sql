@@ -167,7 +167,7 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN d IS NULL THEN TRUE
-  WHEN d ~ '(gmail\.com|yahoo\.|outlook\.|hotmail\.|icloud\.|proton\.|gmx\.|web\.de|aol\.com)' THEN TRUE
+  WHEN lower(d) ~ '(gmail\.com|yahoo\.|outlook\.|hotmail\.|icloud\.|proton\.|gmx\.|web\.de|aol\.com)' THEN TRUE
   ELSE FALSE
 END
 $$;
@@ -180,23 +180,22 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL THEN FALSE
-  WHEN h ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.)|(profesia\.sk)' THEN TRUE
+  WHEN lower(h) ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.)|(profesia\.sk)' THEN TRUE
   ELSE FALSE
 END
 $$;
 
--- Treat parent/child domains as same org, e.g., "foo.com" ~ "eu.foo.com".
-CREATE OR REPLACE FUNCTION util.same_org_domain(d1 text, d2 text)
+-- Treat two inputs as the same org if their org roots match.
+-- Accepts raw domains or full URLs; compares util.org_domain(util.url_host(x)).
+CREATE OR REPLACE FUNCTION util.same_org_domain(a text, b text)
 RETURNS boolean
 LANGUAGE sql
 IMMUTABLE
 AS $$
 SELECT CASE
-  WHEN d1 IS NULL OR d2 IS NULL THEN FALSE
-  WHEN lower(d1) = lower(d2) THEN TRUE
-  WHEN lower(d1) LIKE '%.' || lower(d2) THEN TRUE
-  WHEN lower(d2) LIKE '%.' || lower(d1) THEN TRUE
-  ELSE FALSE
+  WHEN a IS NULL OR b IS NULL THEN FALSE
+  ELSE
+    util.org_domain(util.url_host(a)) = util.org_domain(util.url_host(b))
 END
 $$;
 
@@ -298,7 +297,7 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL THEN FALSE
-  WHEN h ~ '(greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|bamboohr\.com|smartrecruiters\.com|recruitee\.com|ashbyhq\.com|jobs\.personio\.de|personio\.com|icims\.com|teamtailor\.com|taleo\.net|oraclecloud\.com|successfactors\.com|successfactors\.eu|brassring\.com|jobvite\.com|eightfold\.ai|avature.net|grnh.se|recruit\.zoho\.com|snaphunt\.com)'
+  WHEN lower(h) ~ '(greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|bamboohr\.com|smartrecruiters\.com|recruitee\.com|ashbyhq\.com|jobs\.personio\.de|personio\.com|icims\.com|teamtailor\.com|taleo\.net|oraclecloud\.com|successfactors\.com|successfactors\.eu|brassring\.com|jobvite\.com|eightfold\.ai|avature\.net|grnh\.se|recruit\.zoho\.com|snaphunt\.com)'
     THEN TRUE
   ELSE FALSE
 END
@@ -312,9 +311,9 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL OR btrim(h) = '' THEN FALSE
-  WHEN h ~ '\.jobs$'                  THEN TRUE
-  WHEN h ~ '(^|[.-])careers?([.-]|$)' THEN TRUE
-  WHEN h ~ '(^|[.-])jobs([.-]|$)'     THEN TRUE
+  WHEN lower(h) ~ '\.jobs$'                  THEN TRUE
+  WHEN lower(h) ~ '(^|[.-])careers?([.-]|$)' THEN TRUE
+  WHEN lower(h) ~ '(^|[.-])jobs([.-]|$)'     THEN TRUE
   ELSE FALSE
 END
 $$;
