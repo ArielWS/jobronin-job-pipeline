@@ -1,24 +1,31 @@
 -- transforms/sql/12_gold_company_etl.sql
 -- Unified ETL for gold.company:
+--   0) normalize legacy brand_key
 --   1) seed-by-name
 --   2) upsert (name-first, then domain/brand + profile enrichment)
 --   3) evidence write (website/email)
 --   4) promote/upgrade website_domain from evidence
---   5) email backfill for website_domain
---   6) aliases
---   7) linkedin slug extraction
--- All standardized to silver.unified_silver (company_raw, company_domain, etc.)
+--   5) aliases
+--   6) linkedin slug extraction
+-- Source: silver.unified_silver
 
 BEGIN;
+
+--------------------------------------------------------------------------------
+-- 0) One-time hygiene: normalize empty brand_key -> NULL
+--------------------------------------------------------------------------------
+UPDATE gold.company
+SET brand_key = NULL
+WHERE brand_key = '';
 
 --------------------------------------------------------------------------------
 -- 1) Seed companies by distinct normalized name
 --------------------------------------------------------------------------------
 WITH cand AS (
   SELECT DISTINCT
-    s.company_raw                                   AS company_name,
-    util.company_name_norm(s.company_raw)           AS name_norm,
-    lower(util.org_domain(NULLIF(s.company_domain,''))) AS website_root
+    s.company_raw                                        AS company_name,
+    util.company_name_norm(s.company_raw)                AS name_norm,
+    lower(util.org_domain(NULLIF(s.company_domain,'')))  AS website_root
   FROM silver.unified_silver s
   WHERE s.company_raw IS NOT NULL
     AND btrim(s.company_raw) <> ''
@@ -122,14 +129,15 @@ profile_agg AS (
 best_per_name_brand AS (
   SELECT
     b.*,
-    COALESCE((
+    /* NULL = no brand; avoids empty-string pitfalls */
+    (
       SELECT r.brand_key
       FROM gold.company_brand_rule r
       WHERE r.active = TRUE
         AND r.domain_root = b.org_root
         AND b.name_norm ~ r.brand_regex
       LIMIT 1
-    ), ''::text) AS brand_key_norm
+    ) AS brand_key_norm
   FROM best_per_name b
   WHERE b.rn = 1
 ),
@@ -150,7 +158,7 @@ ins_names AS (
 domain_winner AS (
   SELECT
     d.*,
-    ROW_NUMBER() OVER (PARTITION BY d.org_root, d.brand_key_norm
+    ROW_NUMBER() OVER (PARTITION BY d.org_root, COALESCE(d.brand_key_norm, '')
                        ORDER BY length(coalesce(d.company_name,'')) DESC) AS rnk
   FROM best_per_name_brand d
   WHERE d.org_root IS NOT NULL
@@ -303,26 +311,6 @@ WHERE w.company_id = gc.company_id
         FROM gold.company c2
         WHERE c2.company_id <> gc.company_id
           AND c2.website_domain = lower(w.value)
-          AND COALESCE(c2.brand_key,'') = COALESCE(gc.brand_key,'')
-      );
-
--- Final backfill from EMAIL root if still NULL
-UPDATE gold.company gc
-SET website_domain = lower(e.value)
-FROM gold.company_evidence_domain e
-WHERE e.company_id = gc.company_id
-  AND e.kind = 'email'
-  AND gc.website_domain IS NULL
-  AND e.value IS NOT NULL
-  AND NOT util.is_generic_email_domain(e.value)
-  AND NOT util.is_aggregator_host(e.value)
-  AND NOT util.is_ats_host(e.value)
-  AND NOT util.is_career_host(e.value)
-  AND NOT EXISTS (
-        SELECT 1
-        FROM gold.company c2
-        WHERE c2.company_id <> gc.company_id
-          AND c2.website_domain = lower(e.value)
           AND COALESCE(c2.brand_key,'') = COALESCE(gc.brand_key,'')
       );
 
