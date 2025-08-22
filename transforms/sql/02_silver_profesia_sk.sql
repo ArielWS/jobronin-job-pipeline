@@ -96,7 +96,6 @@ fields AS (
     ), '') AS apply_url_raw,
 
     -- Contacts & socials
-    -- Build emails_raw from: explicit array/string, contact.email, plus first email found in description
     NULLIF(btrim(
       (
         SELECT string_agg(DISTINCT e, '; ' ORDER BY e)
@@ -126,7 +125,11 @@ fields AS (
     ), '') AS emails_raw,
     NULLIF(jd #>> '{contact,person}','') AS contact_person_raw,
     NULLIF(jd #>> '{contact,phone}','')  AS contact_phone_raw,
-    NULLIF(jd ->> 'social_links','')     AS social_links_raw
+    NULLIF(jd ->> 'social_links','')     AS social_links_raw,
+
+    -- Optional logo/location if present in payload shapes we don't yet cover elsewhere
+    COALESCE(jd #>> '{company,logo_url}', jd #>> '{company_profile,logo_url}') AS company_logo_url,
+    COALESCE(jd #>> '{company,address}',  jd #>> '{company_profile,address}')  AS company_location_raw
   FROM parsed
 ),
 norm AS (
@@ -243,15 +246,16 @@ norm AS (
     -- Additional passthroughs
     f.company_description_raw,
     f.company_size_raw,
+    f.company_industry_raw,
     f.job_level_raw,
     f.remote_type_raw,
     f.contact_person_raw,
     f.contact_phone_raw,
     f.social_links_raw,
 
-    -- Profesia rarely carries these; keep columns aligned with other silvers
-    NULL::text                                              AS company_logo_url,
-    NULL::text                                              AS company_location_raw
+    -- If present in bronze shapes, pass through
+    f.company_logo_url,
+    f.company_location_raw
 
   FROM fields f
   LEFT JOIN LATERAL util.location_parse(f.location_raw) lp ON TRUE
