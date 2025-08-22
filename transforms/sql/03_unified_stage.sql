@@ -32,10 +32,8 @@ WITH jobspy_rows AS (
 
     -- Company
     j.company_raw::text                              AS company_raw,
-    util.company_name_norm_langless(COALESCE(j.company_name, j.company_raw))
-                                                     AS company_name_norm_langless,
-    util.company_name_norm(COALESCE(j.company_name, j.company_raw))
-                                                     AS company_name_norm,
+    util.company_name_norm_langless(j.company_raw)   AS company_name_norm_langless,
+    util.company_name_norm(j.company_raw)            AS company_name_norm,
     j.company_website_raw::text                      AS company_website_raw,
     util.url_canonical(j.company_website_raw)        AS company_website_canonical,
     j.company_linkedin_url::text                     AS company_linkedin_url,
