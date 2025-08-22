@@ -114,8 +114,7 @@ ins_domain AS (
     w.company_industry_raw,
     w.company_logo_url
   FROM root_winners w
-  -- NOTE: partial unique indexes can't be inferred by column list here;
-  -- use target-less ON CONFLICT so any unique violation is ignored.
+  -- partial unique indexes can't be targeted reliably; ignore any conflict
   ON CONFLICT DO NOTHING
   RETURNING gc.company_id, gc.name_norm, gc.website_domain
 ),
@@ -237,27 +236,42 @@ ins_placeholders AS (
   RETURNING gc.company_id
 ),
 
--- 5) Evidence write (website/email/stepstone_id/location)
+-- Force evaluation of ins_placeholders before evidence write
+ins_ref AS (
+  SELECT 1 FROM ins_placeholders LIMIT 1
+),
+
+-- 5) Evidence write (website/email/stepstone_id/location) — after placeholders exist
 add_evidence AS (
   INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
-  SELECT DISTINCT
-    COALESCE(r.company_id,
-             (SELECT gc.company_id FROM gold.company gc WHERE gc.name_norm = r.name_norm ORDER BY (gc.website_domain IS NOT NULL) DESC, gc.company_id LIMIT 1)
-    ) AS cid,
-    kv.kind,
-    kv.val,
-    r.source,
-    r.source_id
-  FROM resolved r
-  CROSS JOIN LATERAL (
-    VALUES
-      ('website', lower(r.org_root_candidate)),
-      ('email',   CASE WHEN r.email_root_raw IS NOT NULL AND NOT util.is_generic_email_domain(r.email_root_raw)
-                       THEN lower(r.email_root_raw) END),
-      ('stepstone_id', r.stepstone_id),
-      ('location', NULLIF(r.loc_text,''))
-  ) AS kv(kind, val)
-  WHERE kv.val IS NOT NULL
+  SELECT *
+  FROM (
+    SELECT DISTINCT
+      COALESCE(
+        r.company_id,
+        (SELECT gc.company_id
+           FROM gold.company gc
+          WHERE gc.name_norm = r.name_norm
+          ORDER BY (gc.website_domain IS NOT NULL) DESC, gc.company_id
+          LIMIT 1)
+      ) AS company_id,
+      kv.kind,
+      kv.val,
+      r.source,
+      r.source_id
+    FROM resolved r
+    CROSS JOIN ins_ref
+    CROSS JOIN LATERAL (
+      VALUES
+        ('website', lower(r.org_root_candidate)),
+        ('email',   CASE WHEN r.email_root_raw IS NOT NULL AND NOT util.is_generic_email_domain(r.email_root_raw)
+                         THEN lower(r.email_root_raw) END),
+        ('stepstone_id', r.stepstone_id),
+        ('location', NULLIF(r.loc_text,''))
+    ) AS kv(kind, val)
+    WHERE kv.val IS NOT NULL
+  ) z
+  WHERE z.company_id IS NOT NULL
   ON CONFLICT (company_id, kind, value) DO NOTHING
   RETURNING 1
 ),
@@ -333,7 +347,7 @@ upd_profile AS (
   WHERE gc.company_id = pb.company_id
   RETURNING 1
 )
--- IMPORTANT: close the WITH-chain with a terminal statement
+-- close the WITH-chain
 SELECT 1;
 
 -- 7) Promote website_domain from WEBSITE evidence (trustworthy > email)
