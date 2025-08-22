@@ -226,14 +226,15 @@ resolved AS (
   FROM rooted s
 ),
 
--- 4) Insert NAME-ONLY placeholders where needed
+-- 4) Insert NAME-ONLY placeholders where needed (ONE per name_norm)
 ins_placeholders AS (
   INSERT INTO gold.company AS gc (name)
-  SELECT DISTINCT r.company_name
+  SELECT DISTINCT ON (r.name_norm) r.company_name
   FROM resolved r
   WHERE r.company_id IS NULL
+  ORDER BY r.name_norm, length(r.company_name) DESC, r.company_name
   ON CONFLICT DO NOTHING
-  RETURNING gc.company_id
+  RETURNING gc.company_id, gc.name_norm
 ),
 
 -- Force evaluation of ins_placeholders before evidence write
@@ -501,5 +502,38 @@ moved_evidence AS (
 DELETE FROM gold.company c
 USING twins t
 WHERE c.company_id = t.placeholder_id;
+
+-- 10) FINAL SAFETY NET: collapse duplicate pure placeholders (no domain, no slug)
+WITH dup AS (
+  SELECT name_norm, array_agg(company_id ORDER BY company_id) AS ids
+  FROM gold.company
+  WHERE website_domain IS NULL
+    AND linkedin_slug IS NULL
+  GROUP BY name_norm
+  HAVING COUNT(*) > 1
+),
+pairs AS (
+  SELECT d.name_norm, d.ids[1] AS survivor_id, unnest(d.ids[2:]) AS victim_id
+  FROM dup d
+),
+move_alias AS (
+  INSERT INTO gold.company_alias (company_id, alias)
+  SELECT p.survivor_id, ca.alias
+  FROM pairs p
+  JOIN gold.company_alias ca ON ca.company_id = p.victim_id
+  ON CONFLICT (company_id, alias_norm) DO NOTHING
+  RETURNING 1
+),
+move_ev AS (
+  INSERT INTO gold.company_evidence_domain (company_id, kind, value, source, source_id)
+  SELECT p.survivor_id, ce.kind, ce.value, ce.source, ce.source_id
+  FROM pairs p
+  JOIN gold.company_evidence_domain ce ON ce.company_id = p.victim_id
+  ON CONFLICT (company_id, kind, value) DO NOTHING
+  RETURNING 1
+)
+DELETE FROM gold.company c
+USING pairs p
+WHERE c.company_id = p.victim_id;
 
 COMMIT;
