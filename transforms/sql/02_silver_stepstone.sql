@@ -47,7 +47,7 @@ emails AS (
 
             UNION ALL
 
-            -- contacts[].emailAddress or contacts[].email
+            -- contacts[].emailAddress
             SELECT NULLIF(btrim(c ->> 'emailAddress'), '')
             FROM jsonb_array_elements(
               CASE
@@ -59,7 +59,8 @@ emails AS (
 
             UNION ALL
 
-            SELECT NULLIF(btrim(c ->> 'email'), '')
+            -- contacts[].email
+            SELECT NULLIF(btrim(c2 ->> 'email'), '')
             FROM jsonb_array_elements(
               CASE
                 WHEN jsonb_typeof(p.jd -> 'contacts') = 'array'
