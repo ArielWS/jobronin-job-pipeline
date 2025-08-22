@@ -167,7 +167,7 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN d IS NULL THEN TRUE
-  WHEN lower(d) ~ '(gmail\.com|yahoo\.|outlook\.|hotmail\.|icloud\.|proton\.|gmx\.|web\.de|aol\.com)' THEN TRUE
+  WHEN d ~ '(gmail\.com|yahoo\.|outlook\.|hotmail\.|icloud\.|proton\.|gmx\.|web\.de|aol\.com)' THEN TRUE
   ELSE FALSE
 END
 $$;
@@ -180,23 +180,21 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL THEN FALSE
-  WHEN lower(h) ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.)|(profesia\.sk)' THEN TRUE
+  WHEN h ~ '(indeed\.)|(glassdoor\.)|(stepstone\.)|(linkedin\.)|(xing\.)|(welcometothejungle\.)|(monster\.)|(profesia\.sk)' THEN TRUE
   ELSE FALSE
 END
 $$;
 
--- Treat two inputs as the same org if their org roots match.
--- Accepts raw domains or full URLs; compares util.org_domain(util.url_host(x)).
-DROP FUNCTION IF EXISTS util.same_org_domain(text, text);
-CREATE OR REPLACE FUNCTION util.same_org_domain(a text, b text)
+-- Treat parent/child domains as the same org by comparing org roots.
+DROP FUNCTION IF EXISTS util.same_org_domain(text,text);
+CREATE OR REPLACE FUNCTION util.same_org_domain(d1 text, d2 text)
 RETURNS boolean
 LANGUAGE sql
 IMMUTABLE
 AS $$
 SELECT CASE
-  WHEN a IS NULL OR b IS NULL THEN FALSE
-  ELSE
-    util.org_domain(util.url_host(a)) = util.org_domain(util.url_host(b))
+  WHEN d1 IS NULL OR d2 IS NULL THEN FALSE
+  ELSE util.org_domain(d1) = util.org_domain(d2)
 END
 $$;
 
@@ -214,6 +212,24 @@ SELECT btrim(
   regexp_replace(
     coalesce(n,''),
     '\s*(?:-|–|—)?\s*(english|deutsch|german|français|francais|español|spanish|italiano|portugu[eê]s|nederlands|polski|русский|рус|\(en\)|\(de\)|\(fr\)|\(es\)|\(it\)|\(pt\)|\(nl\)|\(pl\)|\(ru\))\s*$',
+    '',
+    'gi'
+  )
+)
+$$;
+
+-- Strip a trailing marketing tagline after a separator (e.g., " | ", " – ", "-", ":").
+-- Conservative whitelist to avoid over-merging: recruitment(-as-a-service), RaaS, talent acquisition,
+-- staffing, hiring, careers, job(s).
+CREATE OR REPLACE FUNCTION util.company_name_strip_tagline(n text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+SELECT btrim(
+  regexp_replace(
+    coalesce(n,''),
+    '\s*(?:\||–|—|-|:)\s*(recruitment(?:[\s-]+as[\s-]+a[\s-]+service)?|raas|talent\s+acquisition|staffing|hiring|careers?|jobs?)\s*$',
     '',
     'gi'
   )
@@ -251,13 +267,26 @@ AS $$
   SELECT NULLIF(trim(s),'') FROM squashed;
 $$;
 
--- Normalization that first strips language suffixes, then applies the base normalizer.
+-- Normalization that first strips language suffixes and taglines, then applies the base normalizer.
 CREATE OR REPLACE FUNCTION util.company_name_norm_langless(n text)
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
 AS $$
-SELECT util.company_name_norm(util.company_name_strip_lang_suffix(n))
+SELECT util.company_name_norm(
+         util.company_name_strip_tagline(
+           util.company_name_strip_lang_suffix(n)
+         )
+       )
+$$;
+
+-- A coarse family key for variants: first token of normalized, langless name.
+CREATE OR REPLACE FUNCTION util.company_name_family_key(n text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+SELECT NULLIF(split_part(util.company_name_norm_langless(n), ' ', 1), '')
 $$;
 
 -- Detect placeholder company names we don't want to treat as real identities.
@@ -298,7 +327,7 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL THEN FALSE
-  WHEN lower(h) ~ '(greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|bamboohr\.com|smartrecruiters\.com|recruitee\.com|ashbyhq\.com|jobs\.personio\.de|personio\.com|icims\.com|teamtailor\.com|taleo\.net|oraclecloud\.com|successfactors\.com|successfactors\.eu|brassring\.com|jobvite\.com|eightfold\.ai|avature\.net|grnh\.se|recruit\.zoho\.com|snaphunt\.com)'
+  WHEN h ~ '(greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|bamboohr\.com|smartrecruiters\.com|recruitee\.com|ashbyhq\.com|jobs\.personio\.de|personio\.com|icims\.com|teamtailor\.com|taleo\.net|oraclecloud\.com|successfactors\.com|successfactors\.eu|brassring\.com|jobvite\.com|eightfold\.ai|avature\.net|grnh\.se|recruit\.zoho\.com|snaphunt\.com)'
     THEN TRUE
   ELSE FALSE
 END
@@ -312,9 +341,9 @@ IMMUTABLE
 AS $$
 SELECT CASE
   WHEN h IS NULL OR btrim(h) = '' THEN FALSE
-  WHEN lower(h) ~ '\.jobs$'                  THEN TRUE
-  WHEN lower(h) ~ '(^|[.-])careers?([.-]|$)' THEN TRUE
-  WHEN lower(h) ~ '(^|[.-])jobs([.-]|$)'     THEN TRUE
+  WHEN h ~ '\.jobs$'                  THEN TRUE
+  WHEN h ~ '(^|[.-])careers?([.-]|$)' THEN TRUE
+  WHEN h ~ '(^|[.-])jobs([.-]|$)'     THEN TRUE
   ELSE FALSE
 END
 $$;
