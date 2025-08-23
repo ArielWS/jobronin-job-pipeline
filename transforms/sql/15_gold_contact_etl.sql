@@ -1,18 +1,13 @@
 -- 15_gold_contact_etl.sql
 -- Contacts GOLD ETL (idempotent)
--- Implements deterministic email-first person resolution, evidence capture,
--- affiliation writing, and safe merges (incl. no-email -> email keeper).
+-- Deterministic email-first person resolution, evidence capture,
+-- affiliation writing, and safe merges (collapse name+company no-email dupes into the email keeper).
 
 SET search_path = public, util, gold, silver;
 
--- Optional: debug view for atoms (recreated on each run)
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'gold' AND viewname = 'v_contact_atoms') THEN
-    EXECUTE 'DROP VIEW gold.v_contact_atoms';
-  END IF;
-END$$;
-
+--------------------------------------------------------------------------------
+-- MAIN ETL
+--------------------------------------------------------------------------------
 WITH
 -- 1) SOURCE NORMALIZATION ------------------------------------------------------
 src AS (
@@ -33,12 +28,11 @@ src AS (
       NULLIF(us.region_guess,'') AS region_guess,
       NULLIF(us.country_guess,'') AS country_guess,
 
-      -- contacts: emails
+      -- contacts: emails (prefer emails_all; else split emails_raw + first_email(description_raw))
       CASE
         WHEN us.emails_all IS NOT NULL AND cardinality(us.emails_all) > 0
           THEN us.emails_all
         ELSE
-          -- build from emails_raw (+ first_email from description as a helper)
           (
             SELECT ARRAY(
               SELECT DISTINCT lower(trim(e))
@@ -61,7 +55,7 @@ src AS (
   FROM silver.unified_silver us
 ),
 
--- 2) COMPANY RESOLUTION (re-apply pragmatic version of company logic) ---------
+-- 2) COMPANY RESOLUTION (pragmatic re-use of company logic order) -------------
 -- Order: domain -> linkedin slug -> name+geo -> name only
 resolved_company AS (
   WITH base AS (
@@ -122,13 +116,11 @@ resolved_company AS (
 ),
 
 -- 3) ATOMS (explode to person/email/phone/title bits) -------------------------
--- We produce atoms from: email_array; contacts_json (per-person objects); raw phone/name.
 atoms_pre AS (
+  -- from email_array
   SELECT
     s.source, s.source_id, s.source_row_url, s.scraped_at, s.date_posted,
     rc.company_id,
-
-    -- from email_array
     lower(e)                               AS email,
     NULL::text                              AS person_name,
     NULL::text                              AS person_title,
@@ -139,7 +131,8 @@ atoms_pre AS (
   LEFT JOIN LATERAL unnest(coalesce(s.email_array, ARRAY[]::text[])) e ON true
 
   UNION ALL
-  -- from contacts_json: prefer array-of-objects; but accept single object
+
+  -- from contacts_json (array of objects or single object)
   SELECT
     s.source, s.source_id, s.source_row_url, s.scraped_at, s.date_posted,
     rc.company_id,
@@ -160,6 +153,7 @@ atoms_pre AS (
   ) j ON obj IS NOT NULL
 
   UNION ALL
+
   -- raw phone + person fallback
   SELECT
     s.source, s.source_id, s.source_row_url, s.scraped_at, s.date_posted,
@@ -173,7 +167,6 @@ atoms_pre AS (
   JOIN resolved_company rc USING (source, source_id)
 ),
 
--- normalize atom details
 atoms AS (
   SELECT
     a.*,
@@ -183,15 +176,12 @@ atoms AS (
       ELSE NULL
     END AS phone_norm,
 
-    -- email meta
     CASE WHEN a.email IS NOT NULL THEN util.email_domain(a.email) END AS email_domain,
     CASE WHEN a.email IS NOT NULL THEN util.org_domain(util.email_domain(a.email)) END AS email_root,
 
-    -- flags
     CASE WHEN a.email IS NULL THEN false
          ELSE util.is_generic_email_domain(util.email_domain(a.email)) END AS is_generic_domain,
 
-    -- very simple generic mailbox detector (expandable)
     CASE
       WHEN a.email IS NULL THEN false
       ELSE lower(split_part(a.email,'@',1)) ~* '^(info|career|careers|jobs|recruit|recruiting|hr|bewerbung|kontakt|hello|support|admin|office|team|sbv|service|mail|kontakt|karriere)$'
@@ -199,28 +189,16 @@ atoms AS (
   FROM atoms_pre a
 ),
 
--- expose atoms for ad-hoc debugging
-v_atoms AS (
-  SELECT * FROM atoms
-),
-__create_view AS (
-  SELECT 1
-  FROM (SELECT COUNT(*) c FROM pg_views WHERE schemaname='gold' AND viewname='v_contact_atoms') x
-),
-finalize_view AS (
-  SELECT 1
-),
--- 4) PAIR email -> name WHEN THEY CO-OCCUR (for trusted name on email seeds)
+-- 4) map email->name ONLY when the name co-occurs with the email in JSON ------
 email_name_pairs AS (
   SELECT DISTINCT lower(email) AS email, name_norm
   FROM atoms
   WHERE email IS NOT NULL AND name_norm IS NOT NULL AND fact_src='json_contacts'
 ),
 
--- 5) SEEDS: group by a strong handle (email if any; else name+company)
+-- 5) SEEDS: strong (email), weak (name+company when no email) -----------------
 seeds AS (
   SELECT
-    -- email seeds
     'email'::text AS seed_kind,
     lower(email)  AS seed_key,
     company_id,
@@ -230,6 +208,7 @@ seeds AS (
   GROUP BY 1,2,3
 
   UNION ALL
+
   SELECT
     'name_company'::text AS seed_kind,
     name_norm            AS seed_key,
@@ -240,17 +219,14 @@ seeds AS (
   GROUP BY 1,2,3
 ),
 
--- 6) BEST CHOICE PER SEED (email/name/phone/title) with strict rules ----------
+-- 6) BEST CHOICE PER SEED -----------------------------------------------------
 best_per_seed AS (
   SELECT
     s.seed_kind,
     s.seed_key,
     s.company_id,
 
-    -- best email:
-    --   prefer non-generic-domain AND non-generic-mailbox
-    --   else allow non-generic-domain but generic-mailbox only as generic_email (later)
-    --   keep first by earliest scraped_at to stabilize
+    -- best email (prefer non-generic domain/mailbox, then earliest)
     (
       SELECT a->>'email'
       FROM (
@@ -277,7 +253,7 @@ best_per_seed AS (
       LIMIT 1
     ) AS best_phone_norm,
 
-    -- best title: prefer those that co-occur with the chosen email; else any
+    -- best title: try to tie to the chosen email; else any
     (
       SELECT a->>'person_title'
       FROM (
@@ -285,43 +261,39 @@ best_per_seed AS (
         FROM unnest(s.atom_rows) a
         WHERE NULLIF(a->>'person_title','') IS NOT NULL
           AND (
-                -- if we have an email winner, tie the title to that email if available
-                ( (SELECT 1 WHERE (
-                      SELECT a0->>'email'
-                      FROM (
-                        SELECT (a0)::jsonb AS a0
-                        FROM unnest(s.atom_rows) a0
-                        WHERE (a0->>'email') IS NOT NULL
-                        ORDER BY
-                          ((a0->>'is_generic_domain')::boolean) ASC,
-                          ((a0->>'is_generic_mailbox')::boolean) ASC,
-                          (a0->>'scraped_at') ASC
-                        LIMIT 1
-                      ) e
-                    ) IS NOT NULL
-                  ) IS NULL)
-             OR (a->>'email') = (
-                    SELECT a0->>'email'
-                    FROM (
-                      SELECT (a0)::jsonb AS a0
-                      FROM unnest(s.atom_rows) a0
-                      WHERE (a0->>'email') IS NOT NULL
-                      ORDER BY
-                        ((a0->>'is_generic_domain')::boolean) ASC,
-                        ((a0->>'is_generic_mailbox')::boolean) ASC,
-                        (a0->>'scraped_at') ASC
-                      LIMIT 1
-                    ) e2
-                  )
+               (SELECT 1 WHERE (
+                   SELECT a0->>'email'
+                   FROM (
+                     SELECT (a0)::jsonb AS a0
+                     FROM unnest(s.atom_rows) a0
+                     WHERE (a0->>'email') IS NOT NULL
+                     ORDER BY
+                       ((a0->>'is_generic_domain')::boolean) ASC,
+                       ((a0->>'is_generic_mailbox')::boolean) ASC,
+                       (a0->>'scraped_at') ASC
+                     LIMIT 1
+                   ) e
+                 ) IS NOT NULL) IS NULL
+               OR (a->>'email') = (
+                   SELECT a0->>'email'
+                   FROM (
+                     SELECT (a0)::jsonb AS a0
+                     FROM unnest(s.atom_rows) a0
+                     WHERE (a0->>'email') IS NOT NULL
+                     ORDER BY
+                       ((a0->>'is_generic_domain')::boolean) ASC,
+                       ((a0->>'is_generic_mailbox')::boolean) ASC,
+                       (a0->>'scraped_at') ASC
+                     LIMIT 1
+                   ) e2
+                 )
               )
         ORDER BY length(a->>'person_title') DESC NULLS LAST, (a->>'scraped_at') ASC
       ) z
       LIMIT 1
     ) AS best_title,
 
-    -- best name:
-    --   for email seeds -> only accept a name that co-occurs with that email (from JSON contacts)
-    --   for name_company seeds -> the seed key itself is the best name
+    -- best name: for email seed, only accept a name seen with that email; else seed name
     CASE
       WHEN s.seed_kind = 'email' THEN (
         SELECT enp.name_norm
@@ -344,7 +316,7 @@ best_per_seed AS (
       ELSE s.seed_key
     END AS best_name_norm,
 
-    -- best scraped_at (for affiliation windowing)
+    -- for affiliations
     (
       SELECT (a->>'scraped_at')::timestamptz
       FROM unnest(s.atom_rows) a
@@ -360,7 +332,7 @@ best_per_seed AS (
   FROM seeds s
 ),
 
--- 7) CLASSIFY EMAIL AS PRIMARY vs GENERIC_MAILBOX -----------------------------
+-- 7) CLASSIFY EMAIL (primary vs generic mailbox) ------------------------------
 candidates AS (
   SELECT
     bps.seed_kind,
@@ -372,8 +344,6 @@ candidates AS (
     NULLIF(bps.best_name_norm,'')                      AS name_norm,
     bps.first_seen_at,
     bps.last_seen_at,
-
-    -- compute email classification
     CASE WHEN bps.best_email IS NULL THEN NULL
          ELSE util.is_generic_email_domain(util.email_domain(bps.best_email)) END AS is_generic_domain,
     CASE WHEN bps.best_email IS NULL THEN NULL
@@ -381,16 +351,15 @@ candidates AS (
   FROM best_per_seed bps
 ),
 
--- 8) FILTER OUT EMPTY SHELLS (must have at least one identity) ----------------
+-- 8) FILTER OUT EMPTY SHELLS ---------------------------------------------------
 final_candidates AS (
   SELECT *
   FROM candidates
-  WHERE
-    (email IS NOT NULL OR name_norm IS NOT NULL OR phone_norm IS NOT NULL)
+  WHERE (email IS NOT NULL OR name_norm IS NOT NULL OR phone_norm IS NOT NULL)
 ),
 
--- 9) UPSERT CONTACT ROWS -------------------------------------------------------
--- 9a) Email-based upsert (only when email non-generic-domain and non-generic-mailbox)
+-- 9) UPSERT CONTACTS -----------------------------------------------------------
+-- 9a) Email-based upsert (only non-generic domain & mailbox)
 ins_email AS (
   INSERT INTO gold.contact (full_name, name_norm, primary_email, primary_phone, title_raw, primary_company_id)
   SELECT
@@ -414,9 +383,7 @@ ins_email AS (
   RETURNING contact_id, lower(primary_email) AS primary_email_lower
 ),
 
--- 9b) Capture generic mailbox emails on existing/created person as generic_email slot
--- We store a single generic_email on the contact row if no specific primary_email is used.
--- Strategy: link by (a) the email row we just inserted (ins_email) OR (b) name+company fallback record (inserted later).
+-- 9b) Capture generic mailbox emails as generic_email on a contact
 generic_email_targets AS (
   SELECT
     fc.seed_kind, fc.seed_key, fc.company_id,
@@ -433,22 +400,14 @@ generic_email_targets AS (
 ),
 
 -- 9c) Name+company upsert for rows with NO email or generic-only email
--- dedupe key: (name_norm, company_id) where primary_email IS NULL
 selected_name_company AS (
-  SELECT
-    g.seed_kind, g.seed_key, g.company_id,
-    g.name_norm, g.phone_norm, g.title_raw
-  FROM (
-    SELECT seed_kind, seed_key, company_id, name_norm, phone_norm, title_raw
-    FROM final_candidates
-    WHERE email IS NULL  -- no email
-    UNION ALL
-    SELECT seed_kind, seed_key, company_id, name_norm, phone_norm, title_raw
-    FROM generic_email_targets
-  ) g
-  WHERE g.name_norm IS NOT NULL
+  SELECT seed_kind, seed_key, company_id, name_norm, phone_norm, title_raw
+  FROM final_candidates
+  WHERE email IS NULL
+  UNION ALL
+  SELECT seed_kind, seed_key, company_id, name_norm, phone_norm, title_raw
+  FROM generic_email_targets
 ),
--- try to find an existing "no-email" contact with the same (name_norm, company)
 matched AS (
   SELECT s.*,
          c.contact_id AS existing_contact_id
@@ -457,6 +416,7 @@ matched AS (
     ON c.primary_email IS NULL
    AND c.name_norm = s.name_norm
    AND c.primary_company_id = s.company_id
+  WHERE s.name_norm IS NOT NULL
 ),
 ins_no_email AS (
   INSERT INTO gold.contact (full_name, name_norm, primary_email, primary_phone, title_raw, primary_company_id, generic_email)
@@ -468,7 +428,7 @@ ins_no_email AS (
     m.title_raw,
     m.company_id,
     CASE
-      WHEN m.seed_kind='email' THEN lower(m.seed_key)  -- generic email stored as seed_key
+      WHEN m.seed_kind='email' THEN lower(m.seed_key)
       ELSE NULL::text
     END AS generic_email
   FROM matched m
@@ -490,34 +450,29 @@ upd_no_email AS (
   RETURNING c.contact_id
 ),
 
--- 10) LINK GENERIC EMAILS TO THEIR CONTACT (if they weren’t covered above) ----
--- Try to attach generic emails to email-based contacts if same seed exists
+-- 10) (Rare) attach generic email to an email-contact if same seed matched -----
 attach_generic_to_email_contacts AS (
   UPDATE gold.contact c
   SET generic_email = COALESCE(c.generic_email, g.generic_email_lower),
       updated_at = now()
   FROM generic_email_targets g
   JOIN ins_email ie
-    ON ie.primary_email_lower = g.generic_email_lower  -- rare case; if their generic email also was chosen (shouldn’t), harmless
+    ON ie.primary_email_lower = g.generic_email_lower
   WHERE lower(c.primary_email) = ie.primary_email_lower
   RETURNING c.contact_id
 ),
 
--- 11) CONTACT_ID RESOLUTION TABLE FOR EVIDENCE/AFFILIATIONS -------------------
+-- 11) CONTACT LOOKUP for evidence/affiliations --------------------------------
 contact_lookup AS (
-  -- resolved email contacts
   SELECT lower(c.primary_email) AS email_lower, c.contact_id, c.primary_company_id
   FROM gold.contact c
   WHERE c.primary_email IS NOT NULL
   UNION ALL
-  -- resolved name+company contacts (no-email)
   SELECT NULL::text AS email_lower, c.contact_id, c.primary_company_id
   FROM gold.contact c
   WHERE c.primary_email IS NULL
 ),
 
--- 12) EVIDENCE WRITES ----------------------------------------------------------
--- atoms flattened again for evidence join
 atoms_for_ev AS (
   SELECT
     a.source, a.source_id, a.source_row_url, a.scraped_at,
@@ -525,7 +480,7 @@ atoms_for_ev AS (
     a.person_title, a.fact_src
   FROM atoms a
 ),
--- resolve contact_id for each atom:
+
 atoms_with_contact AS (
   SELECT
     a.*,
@@ -540,7 +495,8 @@ atoms_with_contact AS (
     ) AS contact_id
   FROM atoms_for_ev a
 ),
--- write email evidence (per contact)
+
+-- 12) EVIDENCE -----------------------------------------------------------------
 ev_email AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
   SELECT DISTINCT
@@ -552,7 +508,6 @@ ev_email AS (
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING contact_id
 ),
--- write phone evidence
 ev_phone AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
   SELECT DISTINCT
@@ -564,7 +519,6 @@ ev_phone AS (
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING contact_id
 ),
--- write title evidence; include person_name/email in detail for coherence selection later
 ev_title AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
   SELECT DISTINCT
@@ -610,7 +564,7 @@ aff_upsert AS (
   RETURNING contact_id
 ),
 
--- 14) PROMOTE TITLES COHERENTLY (tie to primary email when possible) ----------
+-- 14) PROMOTE TITLES COHERENTLY -----------------------------------------------
 promote_titles AS (
   UPDATE gold.contact c
   SET title_raw = COALESCE(
@@ -625,7 +579,7 @@ promote_titles AS (
         ORDER BY ce.created_at DESC
         LIMIT 1
       ),
-      -- title tied to alias match on name (if no email)
+      -- title tied to name if no email
       (
         SELECT ce.value
         FROM gold.contact_evidence ce
@@ -640,8 +594,7 @@ promote_titles AS (
       (
         SELECT ce.value
         FROM gold.contact_evidence ce
-        WHERE ce.contact_id=c.contact_id
-          AND ce.kind='title'
+        WHERE ce.contact_id=c.contact_id AND ce.kind='title'
         ORDER BY ce.created_at DESC
         LIMIT 1
       ),
@@ -652,8 +605,11 @@ promote_titles AS (
   RETURNING c.contact_id
 )
 
--- 15) SAFE MERGE: collapse no-email duplicates into email-keeper --------------
-;
+SELECT 'ok' AS status;
+
+--------------------------------------------------------------------------------
+-- SAFE MERGE: collapse no-email duplicates into the unique email-keeper
+--------------------------------------------------------------------------------
 WITH
 groups AS (
   SELECT name_norm, primary_company_id,
@@ -670,14 +626,13 @@ to_merge AS (
          keep_with_email                                 AS keep_id
   FROM groups
 ),
--- move aliases
+-- move aliases (if any)
 m_alias AS (
-  INSERT INTO gold.contact_alias (contact_id, alias, primary_flag)
-  SELECT t.keep_id, ca.alias, ca.primary_flag
+  INSERT INTO gold.contact_alias (contact_id, alias)
+  SELECT t.keep_id, ca.alias
   FROM to_merge t
   JOIN gold.contact_alias ca ON ca.contact_id=t.dup_id
-  ON CONFLICT (contact_id, alias_norm)
-  DO UPDATE SET primary_flag = gold.contact_alias.primary_flag OR EXCLUDED.primary_flag
+  ON CONFLICT (contact_id, alias_norm) DO NOTHING
   RETURNING contact_id
 ),
 -- move evidence
@@ -707,6 +662,3 @@ DELETE FROM gold.contact c
 USING to_merge t
 WHERE c.contact_id = t.dup_id
 ;
-
--- 16) STATUS PING -------------------------------------------------------------
-SELECT 'ok' AS status;
