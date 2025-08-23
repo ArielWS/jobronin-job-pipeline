@@ -1,7 +1,10 @@
 -- transforms/sql/15_gold_contact_etl.sql
--- Deterministic, idempotent ETL to populate gold.contact* from silver.unified_silver
--- Robust against duplicate emails across rows/sources. Uses ON CONFLICT (primary_email_lower)
--- and pre-dedupes all upserts. Email evidence maps by email globally (ignores source/source_id).
+-- Gold Contact ETL (idempotent)
+-- - De-dupes email-less inserts (phone+company then name+company)
+-- - Maps email-less winners to contact_id so evidence & affiliations are written
+-- - Guards low-quality names
+-- - Never promotes generic mailbox to primary_email (kept as evidence and generic_email)
+-- - Resolves companies via domain/slug hints consistent with gold.company
 
 SET search_path = public;
 
@@ -22,7 +25,7 @@ unified AS (
     NULLIF(us.company_stepstone_id,'') AS company_stepstone_id,
     NULLIF(us.emails_raw,'')           AS emails_raw,
     us.emails_all                      AS emails_all,
-    us.contacts_raw                    AS contacts_raw,  -- JSONB already cleaned in silvers
+    us.contacts_raw                    AS contacts_raw,  -- already cleaned in silvers
     NULLIF(us.contact_person_raw,'')   AS contact_person_raw,
     NULLIF(us.contact_phone_raw,'')    AS contact_phone_raw,
     us.city_guess, us.region_guess, us.country_guess
@@ -56,7 +59,7 @@ json_atoms AS (
     cr.source, cr.source_id, cr.source_row_url, cr.scraped_at, cr.date_posted,
     cr.company_id_hint, cr.company_root, cr.company_slug,
     COALESCE(NULLIF(trim(both from (c.value->>'personName')),''),
-             NULLIF(trim(both from (c.value->>'name')),'')) AS person_name,
+             NULLIF(trim(both from (c.value->>'name')),'')) AS person_name_raw,
     COALESCE(NULLIF(lower(c.value->>'emailAddress'),''),
              NULLIF(lower(c.value->>'email'),''),
              NULLIF(lower(c.value->>'mail'),'') ) AS email,
@@ -77,7 +80,7 @@ emails_all_atoms AS (
   SELECT
     cr.source, cr.source_id, cr.source_row_url, cr.scraped_at, cr.date_posted,
     cr.company_id_hint, cr.company_root, cr.company_slug,
-    NULL::text AS person_name,
+    NULL::text AS person_name_raw,
     lower(e)   AS email,
     NULL::text AS title,
     NULL::text AS phone,
@@ -91,7 +94,7 @@ emails_raw_atoms AS (
   SELECT
     cr.source, cr.source_id, cr.source_row_url, cr.scraped_at, cr.date_posted,
     cr.company_id_hint, cr.company_root, cr.company_slug,
-    NULL::text AS person_name,
+    NULL::text AS person_name_raw,
     lower(trim(both from e)) AS email,
     NULL::text AS title,
     NULL::text AS phone,
@@ -106,7 +109,7 @@ raw_person_atoms AS (
   SELECT
     cr.source, cr.source_id, cr.source_row_url, cr.scraped_at, cr.date_posted,
     cr.company_id_hint, cr.company_root, cr.company_slug,
-    cr.contact_person_raw AS person_name,
+    cr.contact_person_raw AS person_name_raw,
     NULL::text AS email,
     NULL::text AS title,
     cr.contact_phone_raw AS phone,
@@ -119,7 +122,12 @@ atoms AS (
   SELECT DISTINCT
     a.source, a.source_id, a.source_row_url, a.scraped_at, a.date_posted,
     a.company_id_hint, a.company_root, a.company_slug,
-    NULLIF(a.person_name,'') AS person_name,
+    -- Name guard: drop "names" with <2 alphabetic chars unless we also have a non-generic email
+    CASE
+      WHEN length(regexp_replace(coalesce(a.person_name_raw,''), '[^[:alpha:]]', '', 'g')) >= 2
+        THEN a.person_name_raw
+      ELSE NULL
+    END AS person_name,
     NULLIF(a.email,'')       AS email,
     NULLIF(a.title,'')       AS title,
     NULLIF(a.phone,'')       AS phone,
@@ -128,8 +136,14 @@ atoms AS (
     util.org_domain(util.email_domain(a.email))              AS email_root,
     util.is_generic_email_domain(util.email_domain(a.email)) AS is_generic_domain,
     util.is_generic_mailbox(a.email)                         AS is_generic_mailbox,
-    util.person_name_norm(a.person_name)                     AS name_norm,
-    util.phone_norm(a.phone)                                 AS phone_norm
+    util.person_name_norm(
+      CASE
+        WHEN length(regexp_replace(coalesce(a.person_name_raw,''), '[^[:alpha:]]', '', 'g')) >= 2
+          THEN a.person_name_raw
+        ELSE NULL
+      END
+    )                                                         AS name_norm,
+    util.phone_norm(a.phone)                                  AS phone_norm
   FROM (
     SELECT * FROM json_atoms
     UNION ALL SELECT * FROM emails_all_atoms
@@ -168,10 +182,8 @@ atoms_eligible AS (
 ),
 
 -- ============================
--- Existing matches by strong/weak keys
+-- Existing contact matches
 -- ============================
-
--- Map by EMAIL ONLY (global), regardless of source/source_id
 existing_by_email AS (
   SELECT ce.value AS email, ce.contact_id
   FROM gold.contact_evidence ce
@@ -194,7 +206,9 @@ existing_by_phone_company AS (
   WHERE a.phone_norm IS NOT NULL AND a.company_id IS NOT NULL
 ),
 
--- Build per-atom seed keys
+-- ============================
+-- Seeds + best choices
+-- ============================
 seeds AS (
   SELECT a.*,
          CASE
@@ -214,14 +228,13 @@ atoms_mapped AS (
          COALESCE(ebe.contact_id, enc.contact_id, epc.contact_id) AS contact_id_existing
   FROM seeds s
   LEFT JOIN existing_by_email ebe
-    ON ebe.email = s.email                                    -- << only by email
+    ON ebe.email = s.email
   LEFT JOIN existing_by_name_company enc
     ON enc.name_norm=s.name_norm AND enc.company_id=s.company_id
   LEFT JOIN existing_by_phone_company epc
     ON epc.phone_norm=s.phone_norm AND epc.company_id=s.company_id
 ),
 
--- Best text per seed_key
 seed_best AS (
   SELECT
     seed_key,
@@ -232,14 +245,12 @@ seed_best AS (
   GROUP BY seed_key
 ),
 
--- Only seeds that don't map to an existing contact
 cand_seeds AS (
   SELECT am.seed_key
   FROM atoms_mapped am
   WHERE am.contact_id_existing IS NULL
 ),
 
--- Metadata for ranking: latest scrape + has_name per seed
 seed_meta AS (
   SELECT s.seed_key,
          max(s.scraped_at) AS latest_scraped,
@@ -248,13 +259,18 @@ seed_meta AS (
   GROUP BY s.seed_key
 ),
 
--- Enrich bests with metadata and company choice
 seed_best_aug AS (
   SELECT
     sb.seed_key,
     sb.best_name,
+    util.person_name_norm(sb.best_name)              AS best_name_norm,
     sb.best_email,
+    util.email_domain(sb.best_email)                 AS best_email_domain,
+    util.org_domain(util.email_domain(sb.best_email)) AS best_email_root,
+    util.is_generic_email_domain(util.email_domain(sb.best_email)) AS best_email_generic_domain,
+    util.is_generic_mailbox(sb.best_email)           AS best_email_generic_mailbox,
     sb.best_phone,
+    util.phone_norm(sb.best_phone)                   AS best_phone_norm,
     sm.latest_scraped,
     sm.has_name,
     (
@@ -269,35 +285,82 @@ seed_best_aug AS (
   LEFT JOIN seed_meta sm ON sm.seed_key = sb.seed_key
 ),
 
--- Winner per email (avoid multi-update in ON CONFLICT)
+-- ==========================================
+-- Winners: email (non-generic) and no-email
+-- ==========================================
+seed_best_final AS (
+  SELECT
+    seed_key,
+    best_name,
+    best_name_norm,
+    -- Null-out generic emails; keep only when truly non-generic
+    CASE WHEN best_email IS NOT NULL
+           AND NOT (best_email_generic_domain OR best_email_generic_mailbox)
+         THEN best_email
+         ELSE NULL
+    END AS best_email,
+    best_phone,
+    best_phone_norm,
+    best_company_id,
+    latest_scraped,
+    has_name
+  FROM seed_best_aug
+),
+
 winners_email AS (
   SELECT DISTINCT ON (lower(best_email))
-    seed_key, best_name, best_email, best_phone, best_company_id
-  FROM seed_best_aug
+    seed_key, best_name, best_name_norm, best_email, best_phone, best_phone_norm, best_company_id
+  FROM seed_best_final
   WHERE best_email IS NOT NULL
   ORDER BY lower(best_email), has_name DESC, latest_scraped DESC, seed_key
 ),
 
--- Keep the seeds with no email (no conflict risk)
-winners_no_email AS (
-  SELECT seed_key, best_name, best_email, best_phone, best_company_id
-  FROM seed_best_aug
+no_email_pool AS (
+  SELECT *
+  FROM seed_best_final
   WHERE best_email IS NULL
+    AND best_company_id IS NOT NULL      -- avoid null-company noise for nameco
+),
+
+-- Phone+company winners first (stronger than name-only)
+winners_phoneco AS (
+  SELECT DISTINCT ON (best_phone_norm, best_company_id)
+    seed_key, best_name, best_name_norm, NULL::text AS best_email, best_phone, best_phone_norm, best_company_id
+  FROM no_email_pool
+  WHERE best_phone_norm IS NOT NULL
+  ORDER BY best_phone_norm, best_company_id, length(coalesce(best_name,'')) DESC NULLS LAST, latest_scraped DESC, seed_key
+),
+
+-- Name+company winners for the remainder
+winners_nameco AS (
+  SELECT DISTINCT ON (p.best_name_norm, p.best_company_id)
+    p.seed_key, p.best_name, p.best_name_norm, NULL::text AS best_email, p.best_phone, p.best_phone_norm, p.best_company_id
+  FROM no_email_pool p
+  LEFT JOIN winners_phoneco ph
+    ON ph.best_company_id = p.best_company_id
+   AND ph.best_phone_norm IS NOT DISTINCT FROM p.best_phone_norm
+  WHERE ph.seed_key IS NULL
+  ORDER BY p.best_name_norm, p.best_company_id,
+           length(coalesce(p.best_phone_norm,'')) DESC NULLS LAST,
+           length(coalesce(p.best_name,'')) DESC NULLS LAST,
+           p.latest_scraped DESC, p.seed_key
 ),
 
 final_candidates AS (
   SELECT * FROM winners_email
   UNION ALL
-  SELECT * FROM winners_no_email
+  SELECT * FROM winners_phoneco
+  UNION ALL
+  SELECT * FROM winners_nameco
 ),
 
--- Upsert by column (works with unique index on primary_email_lower)
+-- Insert / upsert contacts
 ins_contacts AS (
   INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
   SELECT
     fc.best_name,
     fc.best_email,
-    util.phone_norm(fc.best_phone),
+    fc.best_phone_norm,
     NULL,
     fc.best_company_id
   FROM final_candidates fc
@@ -307,48 +370,69 @@ ins_contacts AS (
         title_raw = COALESCE(gold.contact.title_raw, EXCLUDED.title_raw),
         primary_company_id = COALESCE(gold.contact.primary_company_id, EXCLUDED.primary_company_id),
         updated_at = now()
-  RETURNING contact_id, primary_email
+  RETURNING contact_id, full_name, primary_email, primary_company_id
 ),
 
--- Map inserted primary_email -> contact_id for downstream mapping
+-- Map inserted primary_email -> contact_id (email winners)
 inserted_map AS (
-  SELECT primary_email, contact_id FROM ins_contacts
+  SELECT primary_email, contact_id FROM ins_contacts WHERE primary_email IS NOT NULL
 ),
 
--- Final mapping: every atom/seed -> contact_id (existing OR newly inserted by email)
+-- Map name+company winners -> contact_id (email-less winners)
+nameco_winners AS (
+  SELECT seed_key, best_name_norm, best_company_id
+  FROM winners_phoneco
+  UNION ALL
+  SELECT seed_key, best_name_norm, best_company_id
+  FROM winners_nameco
+),
+
+nameco_map AS (
+  SELECT nw.seed_key, c.contact_id
+  FROM nameco_winners nw
+  JOIN gold.contact c
+    ON c.name_norm = nw.best_name_norm
+   AND c.primary_company_id IS NOT DISTINCT FROM nw.best_company_id
+),
+
+-- Final mapping: each atom/seed → a contact
 atom_contact AS (
   SELECT
     am.source, am.source_id, am.seed_key,
     COALESCE(
       am.contact_id_existing,
       (SELECT im.contact_id
-       FROM inserted_map im
-       WHERE im.primary_email IS NOT DISTINCT FROM
-             (SELECT best_email FROM seed_best WHERE seed_key = am.seed_key)
-       LIMIT 1)
+         FROM inserted_map im
+        WHERE im.primary_email IS NOT DISTINCT FROM
+              (SELECT best_email FROM seed_best_final WHERE seed_key = am.seed_key)
+        LIMIT 1),
+      (SELECT nm.contact_id
+         FROM nameco_map nm
+        WHERE nm.seed_key = am.seed_key
+        LIMIT 1)
     ) AS contact_id
   FROM atoms_mapped am
 ),
 
--- Aliases (all observed names)
+-- Aliases: all observed names as non-primary
 ins_aliases AS (
   INSERT INTO gold.contact_alias (contact_id, alias, primary_flag)
   SELECT DISTINCT ac.contact_id, a.person_name, false
   FROM atom_contact ac
   JOIN atoms_eligible a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE a.person_name IS NOT NULL
+  WHERE ac.contact_id IS NOT NULL AND a.person_name IS NOT NULL
   ON CONFLICT (contact_id, alias_norm) DO NOTHING
   RETURNING 1
 ),
 
--- Choose ONE primary alias per contact to avoid multi-update conflicts
+-- Choose one primary alias per contact (longest best_name across seeds)
 primary_alias_choice AS (
   SELECT
     ac.contact_id,
-    (ARRAY_AGG(sb.best_name ORDER BY length(coalesce(sb.best_name,'')) DESC NULLS LAST))[1] AS primary_alias
-  FROM (SELECT DISTINCT contact_id, seed_key FROM atom_contact) ac
-  JOIN seed_best sb ON sb.seed_key = ac.seed_key
-  WHERE sb.best_name IS NOT NULL
+    (ARRAY_AGG(sbf.best_name ORDER BY length(coalesce(sbf.best_name,'')) DESC NULLS LAST))[1] AS primary_alias
+  FROM (SELECT DISTINCT contact_id, seed_key FROM atom_contact WHERE contact_id IS NOT NULL) ac
+  JOIN seed_best_final sbf ON sbf.seed_key = ac.seed_key
+  WHERE sbf.best_name IS NOT NULL
   GROUP BY ac.contact_id
 ),
 
@@ -356,7 +440,8 @@ ins_primary_alias AS (
   INSERT INTO gold.contact_alias (contact_id, alias, primary_flag)
   SELECT pac.contact_id, pac.primary_alias, true
   FROM primary_alias_choice pac
-  WHERE (SELECT COUNT(*) FROM gold.contact_alias ca WHERE ca.contact_id=pac.contact_id AND ca.primary_flag) = 0
+  WHERE pac.primary_alias IS NOT NULL
+    AND (SELECT COUNT(*) FROM gold.contact_alias ca WHERE ca.contact_id=pac.contact_id AND ca.primary_flag) = 0
   ON CONFLICT (contact_id, alias_norm) DO UPDATE SET primary_flag = TRUE
   RETURNING 1
 ),
@@ -374,8 +459,8 @@ ins_ev_email AS (
          )
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE a.email IS NOT NULL
-  ON CONFLICT DO NOTHING   -- handles both (contact_id,kind,value) and global (value) unique
+  WHERE ac.contact_id IS NOT NULL AND a.email IS NOT NULL
+  ON CONFLICT DO NOTHING
   RETURNING 1
 ),
 
@@ -384,7 +469,7 @@ ins_ev_phone AS (
   SELECT DISTINCT ac.contact_id, 'phone', a.phone_norm, a.source, a.source_id
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE a.phone_norm IS NOT NULL
+  WHERE ac.contact_id IS NOT NULL AND a.phone_norm IS NOT NULL
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING 1
 ),
@@ -394,7 +479,7 @@ ins_ev_name AS (
   SELECT DISTINCT ac.contact_id, 'name', a.name_norm, a.source, a.source_id
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE a.name_norm IS NOT NULL
+  WHERE ac.contact_id IS NOT NULL AND a.name_norm IS NOT NULL
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING 1
 ),
@@ -404,7 +489,7 @@ ins_ev_title AS (
   SELECT DISTINCT ac.contact_id, 'title', a.title, a.source, a.source_id
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE a.title IS NOT NULL
+  WHERE ac.contact_id IS NOT NULL AND a.title IS NOT NULL
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING 1
 ),
@@ -415,7 +500,7 @@ ins_ev_row AS (
          jsonb_build_object('scraped_at', a.scraped_at, 'date_posted', a.date_posted, 'fact_src', a.fact_src)
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE a.source_row_url IS NOT NULL
+  WHERE ac.contact_id IS NOT NULL AND a.source_row_url IS NOT NULL
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING 1
 ),
@@ -425,23 +510,23 @@ ins_ev_company_hint AS (
   SELECT DISTINCT ac.contact_id, 'company_hint', COALESCE(a.company_root, a.email_root), a.source, a.source_id
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE COALESCE(a.company_root, a.email_root) IS NOT NULL
+  WHERE ac.contact_id IS NOT NULL AND COALESCE(a.company_root, a.email_root) IS NOT NULL
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING 1
 ),
 
--- Affiliations: roll up to ONE row per (contact_id, company_id) to avoid multi-update conflicts
+-- Affiliations (rolled up one per pair)
 aff_src AS (
   SELECT
     ac.contact_id,
     a.company_id,
-    max(NULLIF(a.title,'')) FILTER (WHERE a.title IS NOT NULL) AS role, -- raw, pick any non-null
+    max(NULLIF(a.title,'')) FILTER (WHERE a.title IS NOT NULL) AS role,
     NULL::text AS seniority,
     min(a.scraped_at) AS first_seen,
     max(a.scraped_at) AS last_seen
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
-  WHERE a.company_id IS NOT NULL
+  WHERE ac.contact_id IS NOT NULL AND a.company_id IS NOT NULL
   GROUP BY ac.contact_id, a.company_id
 ),
 
@@ -467,7 +552,7 @@ aff_upsert AS (
   RETURNING 1
 ),
 
--- Promote primaries after evidence/affiliation are in
+-- Promote primaries; keep generic email only in generic_email when no non-generic exists
 promote_primary AS (
   UPDATE gold.contact c
   SET
@@ -486,11 +571,22 @@ promote_primary AS (
        WHERE ce.contact_id=c.contact_id AND ce.kind='email'
          AND NOT coalesce((ce.detail->>'is_generic_domain')::boolean,false)
          AND NOT coalesce((ce.detail->>'is_generic_mailbox')::boolean,false)
-       ORDER BY ce.created_at DESC LIMIT 1),
-      (SELECT ce.value
-       FROM gold.contact_evidence ce
-       WHERE ce.contact_id=c.contact_id AND ce.kind='email'
        ORDER BY ce.created_at DESC LIMIT 1)
+    ),
+    generic_email = COALESCE(
+      CASE WHEN
+        (SELECT COUNT(*) FROM gold.contact_evidence ce
+          WHERE ce.contact_id=c.contact_id AND ce.kind='email'
+            AND NOT coalesce((ce.detail->>'is_generic_domain')::boolean,false)
+            AND NOT coalesce((ce.detail->>'is_generic_mailbox')::boolean,false)
+        ) = 0
+      THEN
+        (SELECT ce.value
+         FROM gold.contact_evidence ce
+         WHERE ce.contact_id=c.contact_id AND ce.kind='email'
+         ORDER BY ce.created_at DESC LIMIT 1)
+      ELSE c.generic_email END,
+      c.generic_email
     ),
     primary_phone = (
       SELECT ce.value
@@ -517,8 +613,10 @@ promote_primary AS (
        FROM gold.contact_affiliation ca2
        WHERE ca2.contact_id=c.contact_id
        ORDER BY ca2.last_seen DESC NULLS LAST
-       LIMIT 1)
-    )
+       LIMIT 1),
+      c.primary_company_id
+    ),
+    updated_at = now()
   WHERE EXISTS (SELECT 1 FROM gold.contact_evidence ce WHERE ce.contact_id=c.contact_id)
   RETURNING 1
 )
