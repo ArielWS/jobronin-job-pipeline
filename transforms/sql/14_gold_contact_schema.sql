@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS gold.contact (
   primary_phone text,
   primary_linkedin_slug text,
   title_raw text,
-  primary_company_id uuid NULL REFERENCES gold.company(company_id) ON DELETE SET NULL,
+  primary_company_id bigint NULL REFERENCES gold.company(company_id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -85,7 +85,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_evidence_linkedin_global
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS gold.contact_affiliation (
   contact_id uuid NOT NULL REFERENCES gold.contact(contact_id) ON DELETE CASCADE,
-  company_id uuid NOT NULL REFERENCES gold.company(company_id) ON DELETE CASCADE,
+  company_id bigint NOT NULL REFERENCES gold.company(company_id) ON DELETE CASCADE,
   role text,
   seniority text,
   first_seen timestamptz,
@@ -139,7 +139,6 @@ active_aff AS (
 generic_best AS (
   SELECT
     ce.contact_id,
-    -- choose generic email matching active affiliation org_root; else most recent email
     (
       SELECT ce2.value
       FROM gold.contact_evidence ce2
@@ -152,9 +151,7 @@ generic_best AS (
           OR coalesce((ce2.detail->>'is_generic_mailbox')::boolean, false)
         )
       ORDER BY
-        -- prefer match with active org_root
         (util.org_domain(util.email_domain(ce2.value)) = aa.website_domain) DESC NULLS LAST,
-        -- prefer those that came from structured json contacts
         (coalesce(ce2.detail->>'from','') = 'json_contacts') DESC,
         ce2.created_at DESC
       LIMIT 1
@@ -165,7 +162,6 @@ generic_best AS (
 current_company AS (
   SELECT
     ca.contact_id,
-    -- prefer active affiliation if present; else the most recent affiliation
     COALESCE(
       (SELECT company_id FROM active_aff aa WHERE aa.contact_id = ca.contact_id AND aa.rn = 1),
       (SELECT company_id
