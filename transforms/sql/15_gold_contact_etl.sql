@@ -557,18 +557,8 @@ ev_title AS (
   RETURNING contact_id
 ),
 
--- 11) ALIASES (store observed raw names)
-ev_alias AS (
-  INSERT INTO gold.contact_alias (contact_id, alias)
-  SELECT DISTINCT awc.contact_id, awc.person_name
-  FROM atoms_with_contact awc
-  WHERE awc.contact_id IS NOT NULL
-    AND awc.person_name IS NOT NULL
-  ON CONFLICT (contact_id, alias_norm) DO NOTHING
-  RETURNING contact_id
-),
-
 -- 12) AFFILIATIONS -------------------------------------------------------------
+-- Base: one or more rows per (contact_id, company_id, source/source_id) …
 aff_base AS (
   SELECT DISTINCT
     awc.contact_id,
@@ -582,6 +572,18 @@ aff_base AS (
     AND awc.company_id IS NOT NULL
   GROUP BY 1,2,5,6
 ),
+-- Roll up to a SINGLE row per (contact_id, company_id) to avoid intra-statement conflicts
+aff_rollup AS (
+  SELECT
+    contact_id,
+    company_id,
+    MIN(first_seen) AS first_seen,
+    MAX(last_seen) AS last_seen,
+    (ARRAY_AGG(source    ORDER BY last_seen DESC NULLS LAST))[1]   AS source,
+    (ARRAY_AGG(source_id ORDER BY last_seen DESC NULLS LAST))[1]   AS source_id
+  FROM aff_base
+  GROUP BY contact_id, company_id
+),
 aff_upsert AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
@@ -589,7 +591,7 @@ aff_upsert AS (
     a.first_seen, a.last_seen,
     CASE WHEN a.last_seen >= now() - interval '180 days' THEN true ELSE false END,
     a.source, a.source_id
-  FROM aff_base a
+  FROM aff_rollup a
   ON CONFLICT (contact_id, company_id) DO UPDATE
     SET role      = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
         seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
@@ -671,25 +673,43 @@ m_alias AS (
   ON CONFLICT (contact_id, alias_norm) DO NOTHING
   RETURNING contact_id
 ),
-m_ev AS (
-  INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
-  SELECT t.keep_id, ce.kind, ce.value, ce.source, ce.source_id, ce.detail
+-- Roll up affiliations from ALL dup_ids per (keep_id, company_id)
+m_aff_src AS (
+  SELECT
+    t.keep_id AS contact_id,
+    a.company_id,
+    a.first_seen,
+    a.last_seen,
+    a.source,
+    a.source_id
   FROM to_merge t
-  JOIN gold.contact_evidence ce ON ce.contact_id=t.dup_id
-  ON CONFLICT (contact_id, kind, value) DO NOTHING
-  RETURNING contact_id
+  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+),
+m_aff_rollup AS (
+  SELECT
+    contact_id,
+    company_id,
+    MIN(first_seen) AS first_seen,
+    MAX(last_seen)  AS last_seen,
+    (ARRAY_AGG(source    ORDER BY last_seen DESC NULLS LAST))[1]   AS source,
+    (ARRAY_AGG(source_id ORDER BY last_seen DESC NULLS LAST))[1]   AS source_id
+  FROM m_aff_src
+  GROUP BY contact_id, company_id
 ),
 m_aff AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
-  SELECT t.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
-  FROM to_merge t
-  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  SELECT
+    r.contact_id, r.company_id, NULL::text, NULL::text,
+    r.first_seen, r.last_seen,
+    CASE WHEN r.last_seen >= now() - interval '180 days' THEN true ELSE false END,
+    r.source, r.source_id
+  FROM m_aff_rollup r
   ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
-        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
-        first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
-        last_seen = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
-        active = EXCLUDED.active
+    SET first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
+        last_seen  = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
+        active     = EXCLUDED.active,
+        source     = COALESCE(EXCLUDED.source, gold.contact_affiliation.source),
+        source_id  = COALESCE(EXCLUDED.source_id, gold.contact_affiliation.source_id)
   RETURNING contact_id
 )
 DELETE FROM gold.contact c
@@ -727,25 +747,42 @@ m0_alias AS (
   ON CONFLICT (contact_id, alias_norm) DO NOTHING
   RETURNING contact_id
 ),
-m0_ev AS (
-  INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
-  SELECT t.keep_id, ce.kind, ce.value, ce.source, ce.source_id, ce.detail
+m0_aff_src AS (
+  SELECT
+    t.keep_id AS contact_id,
+    a.company_id,
+    a.first_seen,
+    a.last_seen,
+    a.source,
+    a.source_id
   FROM to_merge0 t
-  JOIN gold.contact_evidence ce ON ce.contact_id=t.dup_id
-  ON CONFLICT (contact_id, kind, value) DO NOTHING
-  RETURNING contact_id
+  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+),
+m0_aff_rollup AS (
+  SELECT
+    contact_id,
+    company_id,
+    MIN(first_seen) AS first_seen,
+    MAX(last_seen)  AS last_seen,
+    (ARRAY_AGG(source    ORDER BY last_seen DESC NULLS LAST))[1]   AS source,
+    (ARRAY_AGG(source_id ORDER BY last_seen DESC NULLS LAST))[1]   AS source_id
+  FROM m0_aff_src
+  GROUP BY contact_id, company_id
 ),
 m0_aff AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
-  SELECT t.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
-  FROM to_merge0 t
-  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  SELECT
+    r.contact_id, r.company_id, NULL::text, NULL::text,
+    r.first_seen, r.last_seen,
+    CASE WHEN r.last_seen >= now() - interval '180 days' THEN true ELSE false END,
+    r.source, r.source_id
+  FROM m0_aff_rollup r
   ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
-        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
-        first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
-        last_seen = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
-        active = EXCLUDED.active
+    SET first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
+        last_seen  = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
+        active     = EXCLUDED.active,
+        source     = COALESCE(EXCLUDED.source, gold.contact_affiliation.source),
+        source_id  = COALESCE(EXCLUDED.source_id, gold.contact_affiliation.source_id)
   RETURNING contact_id
 ),
 m0_generic AS (
