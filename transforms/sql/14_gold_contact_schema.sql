@@ -185,9 +185,9 @@ BEGIN
       AND con.contype='u'
       AND EXISTS (
         SELECT 1
-        FROM unnest(con.conkey) AS attnum
-        JOIN pg_attribute a ON a.attrelid = rel.oid AND a.attnum = attnum
-        WHERE a.attname IN ('primary_email_lower')
+        FROM unnest(con.conkey) AS u(attnum)
+        JOIN pg_attribute a ON a.attrelid = rel.oid AND a.attnum = u.attnum
+        WHERE a.attname = 'primary_email_lower'
       )
   LOOP
     EXECUTE format('ALTER TABLE gold.contact DROP CONSTRAINT %I', cname);
