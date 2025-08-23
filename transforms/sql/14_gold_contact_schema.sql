@@ -16,8 +16,6 @@ CREATE TABLE IF NOT EXISTS gold.contact (
 
   -- primaries
   primary_email text,
-  -- generated helper for case-insensitive uniqueness + upserts
-  primary_email_lower text GENERATED ALWAYS AS (lower(primary_email)) STORED,
   primary_phone text,
   primary_linkedin_slug text,
   title_raw text,
@@ -29,13 +27,17 @@ CREATE TABLE IF NOT EXISTS gold.contact (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Replace legacy index name if it exists (from earlier iterations)
-DROP INDEX IF EXISTS ux_contact_primary_email_lower;
-
--- Unique email (case-insensitive) when present, via UNIQUE CONSTRAINT (works with ON CONFLICT)
+-- Ensure generated helper column exists (for CI-unique upserts)
+-- If the table already existed from an older version, this will add it now.
 ALTER TABLE gold.contact
-  ADD CONSTRAINT ux_contact_primary_email_lower
-  UNIQUE (primary_email_lower);
+  ADD COLUMN IF NOT EXISTS primary_email_lower text GENERATED ALWAYS AS (lower(primary_email)) STORED;
+
+-- Clean up any legacy index from earlier iterations
+DROP INDEX IF EXISTS ux_contact_primary_email_lower;
+-- Recreate as a UNIQUE CONSTRAINT (works with ON CONFLICT ON CONSTRAINT ...)
+ALTER TABLE gold.contact
+  DROP CONSTRAINT IF EXISTS ux_contact_primary_email_lower,
+  ADD CONSTRAINT ux_contact_primary_email_lower UNIQUE (primary_email_lower);
 
 -- Unique linkedin slug when present
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_primary_linkedin_slug
