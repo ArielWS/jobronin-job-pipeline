@@ -9,13 +9,16 @@ CREATE SCHEMA IF NOT EXISTS gold;
 -- Legacy cleanup: remove any global-unique on gold.contact_evidence.value
 -- -----------------------------------------------------------------------------
 DO $$
+DECLARE
+  idx TEXT;
 BEGIN
-  -- If the table already exists, drop any legacy UNIQUE constraint/index
+  -- Only if table already exists
   IF EXISTS (
     SELECT 1 FROM information_schema.tables
     WHERE table_schema='gold' AND table_name='contact_evidence'
   ) THEN
-    -- Drop a known legacy constraint name if present
+
+    -- Drop a known legacy UNIQUE constraint name if present
     IF EXISTS (
       SELECT 1
       FROM pg_constraint con
@@ -29,30 +32,35 @@ BEGIN
       EXECUTE 'ALTER TABLE gold.contact_evidence DROP CONSTRAINT ux_contact_evidence_email_global';
     END IF;
 
-    -- Drop any UNIQUE index that enforces uniqueness on value / lower(value)
-    PERFORM 1
-    FROM pg_indexes
-    WHERE schemaname='gold' AND tablename='contact_evidence'
-      AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
-      AND (
-           indexdef ILIKE '%(value)%'
-        OR indexdef ILIKE '%lower(value)%'
-        OR indexdef ILIKE '%lower((value))%'
-      );
-    IF FOUND THEN
-      -- Drop all such indexes
-      FOR
-        SELECT indexname FROM pg_indexes
-        WHERE schemaname='gold' AND tablename='contact_evidence'
-          AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
-          AND (
-               indexdef ILIKE '%(value)%'
-            OR indexdef ILIKE '%lower(value)%'
-            OR indexdef ILIKE '%lower((value))%'
-          )
-      LOOP
-        EXECUTE format('DROP INDEX IF EXISTS gold.%I', indexname);
-      END LOOP;
+    -- Drop ANY UNIQUE index enforcing global uniqueness on value / lower(value)
+    FOR idx IN
+      SELECT indexname
+      FROM pg_indexes
+      WHERE schemaname = 'gold'
+        AND tablename  = 'contact_evidence'
+        AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
+        AND (
+              indexdef ILIKE '%(value)%'
+           OR indexdef ILIKE '%lower(value)%'
+           OR indexdef ILIKE '%lower((value))%'
+        )
+    LOOP
+      EXECUTE format('DROP INDEX IF EXISTS gold.%I', idx);
+    END LOOP;
+
+    -- Ensure the intended PRIMARY KEY exists (contact_id, kind, value)
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_constraint con
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN pg_namespace n ON n.oid = rel.relnamespace
+      WHERE n.nspname = 'gold'
+        AND rel.relname = 'contact_evidence'
+        AND con.contype = 'p'
+    ) THEN
+      EXECUTE 'ALTER TABLE gold.contact_evidence
+               ADD CONSTRAINT pk_contact_evidence
+               PRIMARY KEY (contact_id, kind, value)';
     END IF;
   END IF;
 END$$;
@@ -77,7 +85,7 @@ $$;
 CREATE TABLE IF NOT EXISTS gold.contact (
   contact_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   full_name               text,
-  -- NOTE: kept as a regular column (not GENERATED) so we can migrate/override if needed.
+  -- kept as a regular column (not GENERATED) to allow controlled migrations if ever needed
   name_norm               text,
   primary_email           text,
   primary_phone           text,
@@ -148,7 +156,7 @@ CREATE TABLE IF NOT EXISTS gold.contact_evidence (
   PRIMARY KEY (contact_id, kind, value)
 );
 
--- (Non-unique helpers are fine, we avoid any global-unique on value)
+-- Non-unique helper index (ok to keep)
 CREATE INDEX IF NOT EXISTS ix_contact_evidence_kind_value
 ON gold.contact_evidence (kind, value);
 
@@ -169,6 +177,5 @@ CREATE TABLE IF NOT EXISTS gold.contact_affiliation (
   PRIMARY KEY (contact_id, company_id)
 );
 
--- Helpful lookup
 CREATE INDEX IF NOT EXISTS ix_contact_affil_company
 ON gold.contact_affiliation (company_id);
