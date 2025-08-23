@@ -284,7 +284,7 @@ best_per_seed AS (
       ELSE s.seed_key
     END AS best_name_norm,
 
-    -- best full_name (raw, for storage): prefer the person_name tied to that best email; else any longest name
+    -- best full_name (raw, for storage)
     (
       SELECT a->>'person_name'
       FROM (
@@ -354,7 +354,7 @@ final_candidates AS (
   WHERE (email IS NOT NULL OR name_norm_local IS NOT NULL OR phone_norm IS NOT NULL)
 ),
 
--- 7b) COLLAPSE EMAILS ACROSS COMPANIES (one row per lower(email)) -------------
+-- 7b) COLLAPSE EMAILS GLOBALLY (one row per lower(email)) ---------------------
 email_candidates AS (
   SELECT *
   FROM final_candidates
@@ -381,7 +381,7 @@ email_one AS (
 ),
 
 -- 8) UPSERT CONTACTS -----------------------------------------------------------
--- 8a) Email-based upsert (non-generic domain & mailbox), using email_one to avoid duplicates
+-- 8a) Email-based upsert (non-generic), using email_one to avoid duplicates
 ins_email AS (
   INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
   SELECT
@@ -394,7 +394,6 @@ ins_email AS (
   WHERE eo.email IS NOT NULL
     AND COALESCE(eo.is_generic_domain,false)  = false
     AND COALESCE(eo.is_generic_mailbox,false) = false
-  -- index inference for ux_contact_primary_email_lower
   ON CONFLICT ((lower(primary_email))) WHERE primary_email IS NOT NULL
   DO UPDATE SET
     full_name          = COALESCE(EXCLUDED.full_name, gold.contact.full_name),
@@ -442,7 +441,7 @@ selected_name_company_one AS (
       ROW_NUMBER() OVER (
         PARTITION BY name_norm_local, company_id
         ORDER BY
-          (seed_kind='email') DESC,    -- prefer rows that came with an email seed (generic)
+          (seed_kind='email') DESC,
           length(coalesce(full_name_best,'')) DESC,
           length(coalesce(title_raw,'')) DESC
       ) AS rn
@@ -589,7 +588,7 @@ ev_alias AS (
 ),
 
 -- 12) AFFILIATIONS -------------------------------------------------------------
--- Roll up to ONE row per (contact_id, company_id) before upsert
+-- Roll up to ONE row per (contact_id, company_id) before upsert, then enforce rn=1
 aff_rollup AS (
   SELECT
     awc.contact_id,
@@ -601,6 +600,16 @@ aff_rollup AS (
     AND awc.company_id IS NOT NULL
   GROUP BY 1,2
 ),
+aff_rollup_one AS (
+  SELECT *
+  FROM (
+    SELECT
+      ar.*,
+      ROW_NUMBER() OVER (PARTITION BY contact_id, company_id ORDER BY last_seen DESC, first_seen ASC) AS rn
+    FROM aff_rollup ar
+  ) z
+  WHERE rn = 1
+),
 aff_upsert AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
@@ -608,7 +617,7 @@ aff_upsert AS (
     a.first_seen, a.last_seen,
     CASE WHEN a.last_seen >= now() - interval '180 days' THEN true ELSE false END,
     NULL::text, NULL::text
-  FROM aff_rollup a
+  FROM aff_rollup_one a
   ON CONFLICT (contact_id, company_id) DO UPDATE
     SET role      = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
         seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
@@ -710,11 +719,21 @@ m_aff_rollup AS (
   JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
   GROUP BY 1,2
 ),
+m_aff_rollup_one AS (
+  SELECT *
+  FROM (
+    SELECT
+      r.*,
+      ROW_NUMBER() OVER (PARTITION BY contact_id, company_id ORDER BY last_seen DESC, first_seen ASC) AS rn
+    FROM m_aff_rollup r
+  ) z
+  WHERE rn = 1
+),
 m_aff AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
     r.contact_id, r.company_id, NULL::text, NULL::text, r.first_seen, r.last_seen, r.active, NULL::text, NULL::text
-  FROM m_aff_rollup r
+  FROM m_aff_rollup_one r
   ON CONFLICT (contact_id, company_id) DO UPDATE
     SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
         seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
@@ -766,7 +785,7 @@ m0_ev AS (
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING contact_id
 ),
--- Roll up affiliations per (keep_id, company_id)
+-- Roll up affiliations per (keep_id, company_id), ensure rn=1
 m0_aff_rollup AS (
   SELECT
     t.keep_id         AS contact_id,
@@ -778,11 +797,21 @@ m0_aff_rollup AS (
   JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
   GROUP BY 1,2
 ),
+m0_aff_rollup_one AS (
+  SELECT *
+  FROM (
+    SELECT
+      r.*,
+      ROW_NUMBER() OVER (PARTITION BY contact_id, company_id ORDER BY last_seen DESC, first_seen ASC) AS rn
+    FROM m0_aff_rollup r
+  ) z
+  WHERE rn = 1
+),
 m0_aff AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
     r.contact_id, r.company_id, NULL::text, NULL::text, r.first_seen, r.last_seen, r.active, NULL::text, NULL::text
-  FROM m0_aff_rollup r
+  FROM m0_aff_rollup_one r
   ON CONFLICT (contact_id, company_id) DO UPDATE
     SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
         seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
