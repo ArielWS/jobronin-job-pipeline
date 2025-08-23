@@ -9,11 +9,12 @@ api:
 worker:
 	python worker/runner.py
 
-# End-to-end company pipeline (idempotent, ordered)
+# End-to-end gold pipeline (idempotent, ordered)
 PIPELINE_SQL = \
   transforms/sql/00_extensions.sql \
   transforms/sql/00_jobspy_raw.sql \
   transforms/sql/04_util_functions.sql \
+  transforms/sql/04b_util_person_functions.sql \
   transforms/sql/01_silver_jobspy.sql \
   transforms/sql/02_silver_profesia_sk.sql \
   transforms/sql/02_silver_stepstone.sql \
@@ -21,7 +22,10 @@ PIPELINE_SQL = \
   transforms/sql/10_gold_company.sql \
   transforms/sql/11_gold_company_brand_rules.sql \
   transforms/sql/12_gold_company_etl.sql \
-  transforms/sql/13_gold_company_checks.sql
+  transforms/sql/13_gold_company_checks.sql \
+  transforms/sql/14_gold_contact_schema.sql \
+  transforms/sql/15_gold_contact_etl.sql \
+  transforms/sql/16_gold_contact_checks.sql
 
 pipeline:
 	@if [ -z "$(DATABASE_URL)" ]; then echo "DATABASE_URL not set"; exit 1; fi
@@ -35,7 +39,7 @@ run-sql: pipeline
 nightly:
 	python orchestration/run_nightly.py
 
-# Explicit company SQL sequence, same as PIPELINE_SQL but expanded
+# Explicit company SQL sequence (unchanged order)
 sql-companies:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_extensions.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_jobspy_raw.sql
@@ -48,6 +52,14 @@ sql-companies:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/11_gold_company_brand_rules.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12_gold_company_etl.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/13_gold_company_checks.sql
+
+# Explicit contacts SQL sequence
+# Assumes company gold already built (run `sql-companies` first or use `pipeline`)
+sql-contacts:
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04b_util_person_functions.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/14_gold_contact_schema.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/15_gold_contact_etl.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/16_gold_contact_checks.sql
 
 sanity:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
