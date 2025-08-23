@@ -1,6 +1,7 @@
 -- transforms/sql/15_gold_contact_etl.sql
 -- Deterministic, idempotent ETL to populate gold.contact* from silver.unified_silver
--- De-dupes all ON CONFLICT DO UPDATE statements to avoid "cannot affect row a second time".
+-- Robust against duplicate emails across rows/sources. Uses ON CONFLICT (primary_email_lower)
+-- and pre-dedupes all upserts. Email evidence maps by email globally (ignores source/source_id).
 
 SET search_path = public;
 
@@ -166,22 +167,27 @@ atoms_eligible AS (
      OR phone IS NOT NULL
 ),
 
+-- ============================
 -- Existing matches by strong/weak keys
+-- ============================
+
+-- Map by EMAIL ONLY (global), regardless of source/source_id
 existing_by_email AS (
-  SELECT DISTINCT a.source, a.source_id, a.email, ce.contact_id
-  FROM atoms_eligible a
-  JOIN gold.contact_evidence ce ON ce.kind='email' AND ce.value=a.email
-  WHERE a.email IS NOT NULL
+  SELECT ce.value AS email, ce.contact_id
+  FROM gold.contact_evidence ce
+  WHERE ce.kind='email'
 ),
+
 existing_by_name_company AS (
-  SELECT DISTINCT a.source, a.source_id, a.name_norm, a.company_id, ca.contact_id
+  SELECT DISTINCT a.name_norm, a.company_id, ca.contact_id
   FROM atoms_eligible a
   JOIN gold.contact_alias ca ON ca.alias_norm=a.name_norm
   JOIN gold.contact_affiliation aff ON aff.contact_id=ca.contact_id AND aff.company_id=a.company_id
   WHERE a.name_norm IS NOT NULL AND a.company_id IS NOT NULL
 ),
+
 existing_by_phone_company AS (
-  SELECT DISTINCT a.source, a.source_id, a.phone_norm, a.company_id, ce.contact_id
+  SELECT DISTINCT a.phone_norm, a.company_id, ce.contact_id
   FROM atoms_eligible a
   JOIN gold.contact_evidence ce ON ce.kind='phone' AND ce.value=a.phone_norm
   JOIN gold.contact_affiliation aff ON aff.contact_id=ce.contact_id AND aff.company_id=a.company_id
@@ -208,13 +214,11 @@ atoms_mapped AS (
          COALESCE(ebe.contact_id, enc.contact_id, epc.contact_id) AS contact_id_existing
   FROM seeds s
   LEFT JOIN existing_by_email ebe
-    ON ebe.source=s.source AND ebe.source_id=s.source_id AND ebe.email=s.email
+    ON ebe.email = s.email                                    -- << only by email
   LEFT JOIN existing_by_name_company enc
-    ON enc.source=s.source AND enc.source_id=s.source_id
-   AND enc.name_norm=s.name_norm AND enc.company_id=s.company_id
+    ON enc.name_norm=s.name_norm AND enc.company_id=s.company_id
   LEFT JOIN existing_by_phone_company epc
-    ON epc.source=s.source AND epc.source_id=s.source_id
-   AND epc.phone_norm=s.phone_norm AND epc.company_id=s.company_id
+    ON epc.phone_norm=s.phone_norm AND epc.company_id=s.company_id
 ),
 
 -- Best text per seed_key
@@ -371,7 +375,7 @@ ins_ev_email AS (
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
   WHERE a.email IS NOT NULL
-  ON CONFLICT (contact_id, kind, value) DO NOTHING
+  ON CONFLICT DO NOTHING   -- handles both (contact_id,kind,value) and global (value) unique
   RETURNING 1
 ),
 
