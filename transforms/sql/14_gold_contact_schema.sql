@@ -1,6 +1,6 @@
 -- 14_gold_contact_schema.sql
--- GOLD contacts: schema, constraints, triggers, and legacy-cleanup.
--- Safe to run repeatedly (idempotent) and against existing installs.
+-- GOLD contacts: schema, constraints, triggers, legacy cleanup, and hygiene.
+-- Idempotent. Safe with existing objects and dependent views.
 
 SET search_path = public;
 
@@ -10,9 +10,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE SCHEMA IF NOT EXISTS gold;
 
 --------------------------------------------------------------------------------
--- LEGACY CLEANUP (before creating/altering objects)
--- * Remove any global-unique constraint/index on gold.contact_evidence.value
---   so the same email can appear as evidence for multiple contacts.
+-- LEGACY CLEANUP: remove any global UNIQUE on gold.contact_evidence.value
 --------------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -22,7 +20,7 @@ BEGIN
     SELECT 1 FROM information_schema.tables
     WHERE table_schema='gold' AND table_name='contact_evidence'
   ) THEN
-    -- Drop known legacy UNIQUE constraint name, if present
+    -- Drop known legacy UNIQUE constraint, if present
     IF EXISTS (
       SELECT 1
       FROM pg_constraint con
@@ -36,7 +34,7 @@ BEGIN
       EXECUTE 'ALTER TABLE gold.contact_evidence DROP CONSTRAINT ux_contact_evidence_email_global';
     END IF;
 
-    -- Drop ANY UNIQUE index that enforces global uniqueness on value/lower(value)
+    -- Drop ANY UNIQUE index enforcing global uniqueness on value/lower(value)
     FOR idx IN
       SELECT indexname
       FROM pg_indexes
@@ -70,9 +68,7 @@ $$;
 --------------------------------------------------------------------------------
 -- gold.contact
 --------------------------------------------------------------------------------
--- NOTE:
--- - name_norm is a regular column (not generated) so ETL can set it expressly.
--- - *_lower columns are generated from trimmed+lowered values to avoid dupes.
+-- name_norm is a plain column (NOT generated) so ETL can set it explicitly.
 CREATE TABLE IF NOT EXISTS gold.contact (
   contact_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   full_name               text,
@@ -85,7 +81,7 @@ CREATE TABLE IF NOT EXISTS gold.contact (
 
   generic_email           text,
 
-  -- placeholders (we'll drop/re-add below to ensure correct GENERATED expression)
+  -- present in legacy installs; we will (attempt to) enforce as GENERATED later
   primary_email_lower     text,
   generic_email_lower     text,
 
@@ -97,7 +93,7 @@ CREATE TABLE IF NOT EXISTS gold.contact (
   updated_at              timestamptz NOT NULL DEFAULT now()
 );
 
--- If an older install had name_norm as a GENERATED column, convert it to plain text.
+-- If an older install had name_norm GENERATED, drop the expression
 DO $$
 BEGIN
   IF EXISTS (
@@ -110,7 +106,8 @@ BEGIN
   END IF;
 END$$;
 
--- Recreate the *_lower columns as proper GENERATED ALWAYS (drop & re-add is required)
+-- Recreate *_lower columns as GENERATED when possible; otherwise keep as-is.
+-- We catch dependency errors (SQLSTATE '2BP01') and skip the change to avoid breaking views.
 DO $$
 BEGIN
   -- primary_email_lower
@@ -118,20 +115,36 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_schema='gold' AND table_name='contact' AND column_name='primary_email_lower'
   ) THEN
-    EXECUTE 'ALTER TABLE gold.contact DROP COLUMN primary_email_lower';
+    BEGIN
+      EXECUTE 'ALTER TABLE gold.contact DROP COLUMN primary_email_lower';
+      EXECUTE 'ALTER TABLE gold.contact
+               ADD COLUMN primary_email_lower text GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED';
+    EXCEPTION
+      WHEN SQLSTATE '2BP01' THEN  -- dependent objects exist
+        RAISE NOTICE 'Keeping gold.contact.primary_email_lower as-is due to dependent objects.';
+    END;
+  ELSE
+    EXECUTE 'ALTER TABLE gold.contact
+             ADD COLUMN primary_email_lower text GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED';
   END IF;
-  EXECUTE 'ALTER TABLE gold.contact
-           ADD COLUMN primary_email_lower text GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED';
 
   -- generic_email_lower
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema='gold' AND table_name='contact' AND column_name='generic_email_lower'
   ) THEN
-    EXECUTE 'ALTER TABLE gold.contact DROP COLUMN generic_email_lower';
+    BEGIN
+      EXECUTE 'ALTER TABLE gold.contact DROP COLUMN generic_email_lower';
+      EXECUTE 'ALTER TABLE gold.contact
+               ADD COLUMN generic_email_lower text GENERATED ALWAYS AS (lower(btrim(generic_email))) STORED';
+    EXCEPTION
+      WHEN SQLSTATE '2BP01' THEN
+        RAISE NOTICE 'Keeping gold.contact.generic_email_lower as-is due to dependent objects.';
+    END;
+  ELSE
+    EXECUTE 'ALTER TABLE gold.contact
+             ADD COLUMN generic_email_lower text GENERATED ALWAYS AS (lower(btrim(generic_email))) STORED';
   END IF;
-  EXECUTE 'ALTER TABLE gold.contact
-           ADD COLUMN generic_email_lower text GENERATED ALWAYS AS (lower(btrim(generic_email))) STORED';
 END$$;
 
 -- Updated-at trigger
@@ -140,7 +153,7 @@ CREATE TRIGGER trg_contact_updated_at
 BEFORE UPDATE ON gold.contact
 FOR EACH ROW EXECUTE FUNCTION gold.set_updated_at();
 
--- Email identity index (trim+lower) – drop & recreate to ensure correct expression
+-- Email identity: functional unique index decoupled from *_lower column
 DROP INDEX IF EXISTS gold.ux_contact_primary_email_lower;
 CREATE UNIQUE INDEX ux_contact_primary_email_lower
 ON gold.contact ((lower(btrim(primary_email))))
@@ -208,9 +221,7 @@ CREATE INDEX IF NOT EXISTS ix_contact_affil_company
 ON gold.contact_affiliation (company_id);
 
 --------------------------------------------------------------------------------
--- ONE-TIME HYGIENE (idempotent; safe to run repeatedly)
--- * Trim+lower email fields to avoid duplicates from invisible whitespace.
--- * Remove truly empty shell contacts (no email/phone/title/name and no evidence/affil).
+-- ONE-TIME HYGIENE (idempotent): normalize emails & remove empty shells
 --------------------------------------------------------------------------------
 -- Normalize stored emails (primary & generic)
 UPDATE gold.contact
@@ -221,7 +232,7 @@ UPDATE gold.contact
 SET generic_email = lower(btrim(generic_email)), updated_at = now()
 WHERE generic_email IS NOT NULL AND generic_email <> lower(btrim(generic_email));
 
--- Drop empty shells
+-- Remove truly empty contacts (no identity, no evidence, no affiliation)
 DELETE FROM gold.contact c
 WHERE c.primary_email IS NULL
   AND c.generic_email IS NULL
@@ -231,7 +242,7 @@ WHERE c.primary_email IS NULL
   AND NOT EXISTS (SELECT 1 FROM gold.contact_evidence e WHERE e.contact_id = c.contact_id)
   AND NOT EXISTS (SELECT 1 FROM gold.contact_affiliation a WHERE a.contact_id = c.contact_id);
 
--- Ensure contact_evidence has ONLY the intended PK (if table pre-existed before this run)
+-- Ensure contact_evidence has intended PK even on legacy installs
 DO $$
 BEGIN
   IF EXISTS (
