@@ -1,6 +1,6 @@
 -- 14_gold_contact_schema.sql
--- GOLD contacts: schema, constraints, triggers, legacy cleanup, and hygiene.
--- Idempotent. Safe with existing objects and dependent views.
+-- GOLD contacts: schema, constraints, triggers, legacy cleanup, hygiene & de-dup.
+-- Idempotent and safe with existing dependent views.
 
 SET search_path = public;
 
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS gold.contact (
 
   generic_email           text,
 
-  -- present in legacy installs; we will (attempt to) enforce as GENERATED later
+  -- may already exist in legacy; we’ll attempt to (re)make GENERATED below
   primary_email_lower     text,
   generic_email_lower     text,
 
@@ -106,8 +106,7 @@ BEGIN
   END IF;
 END$$;
 
--- Recreate *_lower columns as GENERATED when possible; otherwise keep as-is.
--- We catch dependency errors (SQLSTATE '2BP01') and skip the change to avoid breaking views.
+-- Try to recreate *_lower as GENERATED; if dependent objects exist, keep as-is
 DO $$
 BEGIN
   -- primary_email_lower
@@ -120,7 +119,7 @@ BEGIN
       EXECUTE 'ALTER TABLE gold.contact
                ADD COLUMN primary_email_lower text GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED';
     EXCEPTION
-      WHEN SQLSTATE '2BP01' THEN  -- dependent objects exist
+      WHEN SQLSTATE '2BP01' THEN
         RAISE NOTICE 'Keeping gold.contact.primary_email_lower as-is due to dependent objects.';
     END;
   ELSE
@@ -153,13 +152,7 @@ CREATE TRIGGER trg_contact_updated_at
 BEFORE UPDATE ON gold.contact
 FOR EACH ROW EXECUTE FUNCTION gold.set_updated_at();
 
--- Email identity: functional unique index decoupled from *_lower column
-DROP INDEX IF EXISTS gold.ux_contact_primary_email_lower;
-CREATE UNIQUE INDEX ux_contact_primary_email_lower
-ON gold.contact ((lower(btrim(primary_email))))
-WHERE primary_email IS NOT NULL;
-
--- Helpful lookups
+-- Helpful lookups (safe anytime)
 CREATE INDEX IF NOT EXISTS ix_contact_name_company_noemail
 ON gold.contact (name_norm, primary_company_id)
 WHERE primary_email IS NULL;
@@ -221,7 +214,7 @@ CREATE INDEX IF NOT EXISTS ix_contact_affil_company
 ON gold.contact_affiliation (company_id);
 
 --------------------------------------------------------------------------------
--- ONE-TIME HYGIENE (idempotent): normalize emails & remove empty shells
+-- HYGIENE: normalize emails & remove empty shells
 --------------------------------------------------------------------------------
 -- Normalize stored emails (primary & generic)
 UPDATE gold.contact
@@ -242,7 +235,109 @@ WHERE c.primary_email IS NULL
   AND NOT EXISTS (SELECT 1 FROM gold.contact_evidence e WHERE e.contact_id = c.contact_id)
   AND NOT EXISTS (SELECT 1 FROM gold.contact_affiliation a WHERE a.contact_id = c.contact_id);
 
+--------------------------------------------------------------------------------
+-- PRE-INDEX DE-DUP: collapse contacts that share the same normalized primary_email
+-- Keep the "richest" row (more non-null fields), tiebreak by oldest created_at.
+-- Merge aliases/evidence/affiliations into the keeper, then delete dups.
+--------------------------------------------------------------------------------
+WITH ranked AS (
+  SELECT
+    c.contact_id,
+    lower(btrim(c.primary_email)) AS email_norm,
+    ((c.full_name IS NOT NULL)::int
+     + (c.title_raw IS NOT NULL)::int
+     + (c.primary_phone IS NOT NULL)::int
+     + (c.primary_company_id IS NOT NULL)::int
+     + (c.generic_email IS NOT NULL)::int
+     + (c.name_norm IS NOT NULL)::int) AS score,
+    c.created_at
+  FROM gold.contact c
+  WHERE c.primary_email IS NOT NULL
+),
+dupgroups AS (
+  SELECT email_norm
+  FROM ranked
+  GROUP BY email_norm
+  HAVING COUNT(*) > 1
+),
+packed AS (
+  SELECT
+    r.email_norm,
+    array_agg(r.contact_id ORDER BY r.score DESC, r.created_at ASC) AS ids
+  FROM ranked r
+  JOIN dupgroups d USING (email_norm)
+  GROUP BY r.email_norm
+),
+pick AS (
+  SELECT
+    email_norm,
+    ids[1] AS keep_id,
+    CASE
+      WHEN array_length(ids,1) > 1 THEN ids[2:array_length(ids,1)]
+      ELSE ARRAY[]::uuid[]
+    END AS dup_ids
+  FROM packed
+),
+m_alias AS (
+  INSERT INTO gold.contact_alias (contact_id, alias)
+  SELECT p.keep_id, ca.alias
+  FROM pick p
+  JOIN gold.contact_alias ca ON ca.contact_id = ANY (p.dup_ids)
+  ON CONFLICT (contact_id, alias_norm) DO NOTHING
+  RETURNING 1
+),
+m_ev AS (
+  INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
+  SELECT p.keep_id, ce.kind, ce.value, ce.source, ce.source_id, ce.detail
+  FROM pick p
+  JOIN gold.contact_evidence ce ON ce.contact_id = ANY (p.dup_ids)
+  ON CONFLICT (contact_id, kind, value) DO NOTHING
+  RETURNING 1
+),
+m_aff AS (
+  INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
+  SELECT p.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
+  FROM pick p
+  JOIN gold.contact_affiliation a ON a.contact_id = ANY (p.dup_ids)
+  ON CONFLICT (contact_id, company_id) DO UPDATE
+    SET role       = COALESCE(EXCLUDED.role,       gold.contact_affiliation.role),
+        seniority  = COALESCE(EXCLUDED.seniority,  gold.contact_affiliation.seniority),
+        first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
+        last_seen  = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
+        active     = EXCLUDED.active
+  RETURNING 1
+),
+m_contact AS (
+  -- Pull over useful fields from duplicates where keeper is null
+  UPDATE gold.contact keep
+  SET full_name          = COALESCE(keep.full_name,          dup.full_name),
+      title_raw          = COALESCE(keep.title_raw,          dup.title_raw),
+      primary_phone      = COALESCE(keep.primary_phone,      dup.primary_phone),
+      primary_company_id = COALESCE(keep.primary_company_id, dup.primary_company_id),
+      generic_email      = COALESCE(keep.generic_email,      dup.generic_email),
+      name_norm          = COALESCE(keep.name_norm,          dup.name_norm),
+      updated_at         = now()
+  FROM pick p
+  JOIN gold.contact dup ON dup.contact_id = ANY (p.dup_ids)
+  WHERE keep.contact_id = p.keep_id
+  RETURNING 1
+)
+DELETE FROM gold.contact c
+USING pick p
+WHERE c.contact_id = ANY (p.dup_ids);
+
+--------------------------------------------------------------------------------
+-- CONSTRAINTS AFTER CLEANUP
+-- Enforce email identity with a functional unique index on normalized email.
+--------------------------------------------------------------------------------
+DROP INDEX IF EXISTS gold.ux_contact_primary_email_lower;
+CREATE UNIQUE INDEX ux_contact_primary_email_lower
+ON gold.contact ((lower(btrim(primary_email))))
+WHERE primary_email IS NOT NULL;
+
+--------------------------------------------------------------------------------
 -- Ensure contact_evidence has intended PK even on legacy installs
+--------------------------------------------------------------------------------
 DO $$
 BEGIN
   IF EXISTS (
