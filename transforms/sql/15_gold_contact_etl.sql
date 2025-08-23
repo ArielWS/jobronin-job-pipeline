@@ -148,12 +148,15 @@ atoms_pre AS (
   FROM src s
   JOIN resolved_company rc USING (source, source_id)
   LEFT JOIN LATERAL (
-    SELECT CASE
-             WHEN jsonb_typeof(s.contacts_json) = 'array' THEN jsonb_array_elements(s.contacts_json)
-             WHEN jsonb_typeof(s.contacts_json) = 'object' THEN s.contacts_json
-             ELSE NULL
-           END AS obj
-  ) j ON obj IS NOT NULL
+    -- If array: one row per element
+    SELECT elem AS obj
+    FROM jsonb_array_elements(s.contacts_json) AS elem
+    WHERE jsonb_typeof(s.contacts_json) = 'array'
+    UNION ALL
+    -- If object: a single row
+    SELECT s.contacts_json AS obj
+    WHERE jsonb_typeof(s.contacts_json) = 'object'
+  ) j ON TRUE
 
   UNION ALL
 
@@ -559,7 +562,9 @@ aff_upsert AS (
     a.source, a.source_id
   FROM aff_base a
   ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
+    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
+        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
+        first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
         last_seen  = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
         active     = EXCLUDED.active,
         source     = COALESCE(EXCLUDED.source, gold.contact_affiliation.source),
