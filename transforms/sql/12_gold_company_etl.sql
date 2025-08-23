@@ -544,11 +544,14 @@ WHERE c.company_id = t.placeholder_id;
 
 -- 9c) FAMILY placeholders → unique family domain anchor (handles "adesso SE" vs "adesso.de")
 WITH fam_anchor AS (
-  SELECT util.company_name_family_key(name) AS family_key, MIN(company_id) AS domain_id
+  SELECT
+    util.company_name_family_key(name) AS family_key,
+    MIN(company_id) AS domain_id
   FROM gold.company
   WHERE website_domain IS NOT NULL
-  GROUP BY 1
-  HAVING family_key IS NOT NULL AND COUNT(*) = 1
+    AND util.company_name_family_key(name) IS NOT NULL
+  GROUP BY util.company_name_family_key(name)
+  HAVING COUNT(*) = 1
 ),
 fam_twins AS (
   SELECT p.company_id AS placeholder_id, fa.domain_id
