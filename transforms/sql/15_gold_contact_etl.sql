@@ -678,17 +678,22 @@ SELECT 'ok' AS status;
 
 -- =============================================================================
 -- SAFE MERGE #1: keep the single email-contact, merge no-email duplicates into it
+-- (uuid-safe; no MAX(uuid))
 -- =============================================================================
 WITH
 groups AS (
-  SELECT name_norm, primary_company_id,
-         MAX(CASE WHEN primary_email IS NOT NULL THEN contact_id END) AS keep_with_email,
-         ARRAY_AGG(contact_id ORDER BY created_at ASC)                AS all_ids
+  SELECT
+    name_norm,
+    primary_company_id,
+    -- pick the member with an email by ordering: email first, then oldest created
+    (ARRAY_AGG(contact_id ORDER BY (primary_email IS NOT NULL) DESC, created_at ASC))[1] AS keep_with_email,
+    ARRAY_AGG(contact_id ORDER BY created_at ASC)                                        AS all_ids,
+    SUM(CASE WHEN primary_email IS NOT NULL THEN 1 ELSE 0 END)                           AS email_cnt
   FROM gold.contact
   WHERE name_norm IS NOT NULL AND primary_company_id IS NOT NULL
   GROUP BY 1,2
   HAVING COUNT(*) > 1
-     AND MAX(CASE WHEN primary_email IS NOT NULL THEN 1 ELSE 0 END) = 1
+     AND SUM(CASE WHEN primary_email IS NOT NULL THEN 1 ELSE 0 END) = 1
 ),
 to_merge AS (
   SELECT unnest(array_remove(all_ids, keep_with_email)) AS dup_id,
