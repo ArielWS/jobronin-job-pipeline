@@ -13,19 +13,29 @@ CREATE TABLE IF NOT EXISTS gold.contact (
   contact_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   full_name text,
   name_norm text GENERATED ALWAYS AS (util.person_name_norm(full_name)) STORED,
+
+  -- primaries
   primary_email text,
+  -- generated helper for case-insensitive uniqueness + upserts
+  primary_email_lower text GENERATED ALWAYS AS (lower(primary_email)) STORED,
   primary_phone text,
   primary_linkedin_slug text,
   title_raw text,
+
+  -- company linkage
   primary_company_id bigint NULL REFERENCES gold.company(company_id) ON DELETE SET NULL,
+
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Unique email (case-insensitive) when present
-CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_primary_email_lower
-  ON gold.contact ((lower(primary_email)))
-  WHERE primary_email IS NOT NULL;
+-- Replace legacy index name if it exists (from earlier iterations)
+DROP INDEX IF EXISTS ux_contact_primary_email_lower;
+
+-- Unique email (case-insensitive) when present, via UNIQUE CONSTRAINT (works with ON CONFLICT)
+ALTER TABLE gold.contact
+  ADD CONSTRAINT ux_contact_primary_email_lower
+  UNIQUE (primary_email_lower);
 
 -- Unique linkedin slug when present
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_primary_linkedin_slug
@@ -102,10 +112,6 @@ CREATE INDEX IF NOT EXISTS ix_contact_aff_active ON gold.contact_affiliation (ac
 
 -- ----------------------------
 -- Rollup view: gold.contact_plus
---   - non_generic_emails[]
---   - generic_emails[]
---   - generic_email_best
---   - current_company_id
 -- ----------------------------
 CREATE OR REPLACE VIEW gold.contact_plus AS
 WITH emails AS (
