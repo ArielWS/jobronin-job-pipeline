@@ -1,7 +1,6 @@
 -- transforms/sql/15_gold_contact_etl.sql
 -- Deterministic, idempotent ETL to populate gold.contact* from silver.unified_silver
--- Uses ON CONFLICT (primary_email_lower) and de-dupes inserts per email to avoid
--- "ON CONFLICT DO UPDATE command cannot affect row a second time".
+-- De-dupes all ON CONFLICT DO UPDATE statements to avoid "cannot affect row a second time".
 
 SET search_path = public;
 
@@ -288,7 +287,7 @@ final_candidates AS (
   SELECT * FROM winners_no_email
 ),
 
--- Upsert by column (works with a unique index)
+-- Upsert by column (works with unique index on primary_email_lower)
 ins_contacts AS (
   INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
   SELECT
@@ -338,15 +337,23 @@ ins_aliases AS (
   RETURNING 1
 ),
 
--- Set one primary alias per contact (prefer the seed's best_name)
+-- Choose ONE primary alias per contact to avoid multi-update conflicts
+primary_alias_choice AS (
+  SELECT
+    ac.contact_id,
+    (ARRAY_AGG(sb.best_name ORDER BY length(coalesce(sb.best_name,'')) DESC NULLS LAST))[1] AS primary_alias
+  FROM (SELECT DISTINCT contact_id, seed_key FROM atom_contact) ac
+  JOIN seed_best sb ON sb.seed_key = ac.seed_key
+  WHERE sb.best_name IS NOT NULL
+  GROUP BY ac.contact_id
+),
+
 ins_primary_alias AS (
   INSERT INTO gold.contact_alias (contact_id, alias, primary_flag)
-  SELECT DISTINCT ac.contact_id,
-         (SELECT best_name FROM seed_best sb WHERE sb.seed_key=ac.seed_key),
-         true
-  FROM atom_contact ac
-  WHERE (SELECT COUNT(*) FROM gold.contact_alias ca WHERE ca.contact_id=ac.contact_id AND ca.primary_flag)=0
-  ON CONFLICT (contact_id, alias_norm) DO UPDATE SET primary_flag=TRUE
+  SELECT pac.contact_id, pac.primary_alias, true
+  FROM primary_alias_choice pac
+  WHERE (SELECT COUNT(*) FROM gold.contact_alias ca WHERE ca.contact_id=pac.contact_id AND ca.primary_flag) = 0
+  ON CONFLICT (contact_id, alias_norm) DO UPDATE SET primary_flag = TRUE
   RETURNING 1
 ),
 
@@ -419,28 +426,33 @@ ins_ev_company_hint AS (
   RETURNING 1
 ),
 
--- Affiliations
+-- Affiliations: roll up to ONE row per (contact_id, company_id) to avoid multi-update conflicts
 aff_src AS (
   SELECT
     ac.contact_id,
     a.company_id,
-    a.source, a.source_id,
-    max(NULLIF(a.title,'')) FILTER (WHERE a.title IS NOT NULL) AS role,
+    max(NULLIF(a.title,'')) FILTER (WHERE a.title IS NOT NULL) AS role, -- raw, pick any non-null
     NULL::text AS seniority,
     min(a.scraped_at) AS first_seen,
     max(a.scraped_at) AS last_seen
   FROM atom_contact ac
   JOIN atoms_with_company a ON a.source=ac.source AND a.source_id=ac.source_id
   WHERE a.company_id IS NOT NULL
-  GROUP BY ac.contact_id, a.company_id, a.source, a.source_id
+  GROUP BY ac.contact_id, a.company_id
 ),
 
 aff_upsert AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
-    s.contact_id, s.company_id, s.role, s.seniority, s.first_seen, s.last_seen,
+    s.contact_id,
+    s.company_id,
+    s.role,
+    s.seniority,
+    s.first_seen,
+    s.last_seen,
     (s.last_seen >= (now() - (SELECT make_interval(days := p.active_days) FROM params p))),
-    s.source, s.source_id
+    NULL::text AS source,
+    NULL::text AS source_id
   FROM aff_src s
   ON CONFLICT (contact_id, company_id) DO UPDATE
     SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
