@@ -5,9 +5,6 @@
 
 SET search_path = public, util, gold, silver;
 
---------------------------------------------------------------------------------
--- MAIN ETL
---------------------------------------------------------------------------------
 WITH
 -- 1) SOURCE NORMALIZATION ------------------------------------------------------
 src AS (
@@ -58,8 +55,7 @@ src AS (
   FROM silver.unified_silver us
 ),
 
--- 2) COMPANY RESOLUTION (pragmatic re-use of company logic order) -------------
--- Order: domain -> linkedin slug -> name+geo -> name only
+-- 2) COMPANY RESOLUTION --------------------------------------------------------
 resolved_company AS (
   WITH base AS (
     SELECT s.*,
@@ -118,7 +114,7 @@ resolved_company AS (
   FROM src b
 ),
 
--- 3) ATOMS (explode to person/email/phone/title bits) -------------------------
+-- 3) ATOMS ---------------------------------------------------------------------
 atoms_pre AS (
   -- from email_array
   SELECT
@@ -195,14 +191,14 @@ atoms AS (
   FROM atoms_pre a
 ),
 
--- 4) map email->name ONLY when the name co-occurs with the email in JSON ------
+-- Only accept a name for an email if seen together in JSON
 email_name_pairs AS (
   SELECT DISTINCT lower(email) AS email, name_norm
   FROM atoms
   WHERE email IS NOT NULL AND name_norm IS NOT NULL AND fact_src='json_contacts'
 ),
 
--- 5) SEEDS: strong (email), weak (name+company when no email) -----------------
+-- 5) SEEDS ---------------------------------------------------------------------
 seeds AS (
   SELECT
     'email'::text AS seed_kind,
@@ -225,7 +221,7 @@ seeds AS (
   GROUP BY 1,2,3
 ),
 
--- 6) BEST CHOICE PER SEED -----------------------------------------------------
+-- 6) BEST CHOICE ---------------------------------------------------------------
 best_per_seed AS (
   SELECT
     s.seed_kind,
@@ -259,41 +255,13 @@ best_per_seed AS (
       LIMIT 1
     ) AS best_phone_norm,
 
-    -- best title: try to tie to the chosen email; else any
+    -- best title: tie to chosen email if possible
     (
       SELECT a->>'person_title'
       FROM (
         SELECT (a)::jsonb AS a
         FROM unnest(s.atom_rows) a
         WHERE NULLIF(a->>'person_title','') IS NOT NULL
-          AND (
-               (SELECT 1 WHERE (
-                   SELECT a0->>'email'
-                   FROM (
-                     SELECT (a0)::jsonb AS a0
-                     FROM unnest(s.atom_rows) a0
-                     WHERE (a0->>'email') IS NOT NULL
-                     ORDER BY
-                       ((a0->>'is_generic_domain')::boolean) ASC,
-                       ((a0->>'is_generic_mailbox')::boolean) ASC,
-                       (a0->>'scraped_at') ASC
-                     LIMIT 1
-                   ) e
-                 ) IS NOT NULL) IS NULL
-               OR (a->>'email') = (
-                   SELECT a0->>'email'
-                   FROM (
-                     SELECT (a0)::jsonb AS a0
-                     FROM unnest(s.atom_rows) a0
-                     WHERE (a0->>'email') IS NOT NULL
-                     ORDER BY
-                       ((a0->>'is_generic_domain')::boolean) ASC,
-                       ((a0->>'is_generic_mailbox')::boolean) ASC,
-                       (a0->>'scraped_at') ASC
-                     LIMIT 1
-                   ) e2
-                 )
-              )
         ORDER BY length(a->>'person_title') DESC NULLS LAST, (a->>'scraped_at') ASC
       ) z
       LIMIT 1
@@ -338,7 +306,7 @@ best_per_seed AS (
   FROM seeds s
 ),
 
--- 7) CLASSIFY EMAIL (primary vs generic mailbox) ------------------------------
+-- 7) CLASSIFY EMAIL ------------------------------------------------------------
 candidates AS (
   SELECT
     bps.seed_kind,
@@ -379,7 +347,8 @@ ins_email AS (
   WHERE fc.email IS NOT NULL
     AND COALESCE(fc.is_generic_domain,false) = false
     AND COALESCE(fc.is_generic_mailbox,false) = false
-  ON CONFLICT ON CONSTRAINT ux_contact_primary_email_lower
+  -- IMPORTANT: index inference matching ux_contact_primary_email_lower
+  ON CONFLICT ((lower(primary_email))) WHERE primary_email IS NOT NULL
   DO UPDATE SET
     name_norm = COALESCE(EXCLUDED.name_norm, gold.contact.name_norm),
     primary_phone = COALESCE(EXCLUDED.primary_phone, gold.contact.primary_phone),
@@ -456,7 +425,7 @@ upd_no_email AS (
   RETURNING c.contact_id
 ),
 
--- 10) (Rare) attach generic email to an email-contact if same seed matched -----
+-- 10) Attach generic email to email-contacts if same address
 attach_generic_to_email_contacts AS (
   UPDATE gold.contact c
   SET generic_email = COALESCE(c.generic_email, g.generic_email_lower),
@@ -572,7 +541,7 @@ aff_upsert AS (
   RETURNING contact_id
 ),
 
--- 14) PROMOTE TITLES COHERENTLY -----------------------------------------------
+-- 14) PROMOTE TITLES -----------------------------------------------------------
 promote_titles AS (
   UPDATE gold.contact c
   SET title_raw = COALESCE(
@@ -615,9 +584,9 @@ promote_titles AS (
 
 SELECT 'ok' AS status;
 
---------------------------------------------------------------------------------
+-- =============================================================================
 -- SAFE MERGE #1: collapse no-email duplicates into the unique email-keeper
---------------------------------------------------------------------------------
+-- =============================================================================
 WITH
 groups AS (
   SELECT name_norm, primary_company_id,
@@ -668,10 +637,10 @@ USING to_merge t
 WHERE c.contact_id = t.dup_id
 ;
 
---------------------------------------------------------------------------------
+-- =============================================================================
 -- SAFE MERGE #2: collapse duplicates where NONE has an email
 -- Keep the row with a phone first, then with a title, else the oldest.
---------------------------------------------------------------------------------
+-- =============================================================================
 WITH
 groups0 AS (
   SELECT name_norm, primary_company_id,
