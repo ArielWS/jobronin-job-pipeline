@@ -92,16 +92,32 @@ json_atoms AS (
   SELECT
     cr.source, cr.source_id, cr.source_row_url, cr.scraped_at, cr.date_posted,
     cr.company_id_hint, cr.company_root, cr.company_slug,
-    COALESCE(NULLIF(trim(both from (c->>'personName')),''), NULLIF(trim(both from (c->>'name')),'')) AS person_name,
-    COALESCE(NULLIF(lower(c->>'emailAddress'),''), NULLIF(lower(c->>'email'),''), NULLIF(lower(c->>'mail'),'')) AS email,
-    COALESCE(NULLIF(c->>'personTitle',''), NULLIF(c->>'title','')) AS title,
-    COALESCE(NULLIF(c->>'phoneNumber',''), NULLIF(c->>'phone',''), NULLIF(c->>'tel','')) AS phone,
+    COALESCE(
+      NULLIF(trim(both from (c.value->>'personName')),''),
+      NULLIF(trim(both from (c.value->>'name')),'')
+    ) AS person_name,
+    COALESCE(
+      NULLIF(lower(c.value->>'emailAddress'),''),
+      NULLIF(lower(c.value->>'email'),''),
+      NULLIF(lower(c.value->>'mail'),'')
+    ) AS email,
+    COALESCE(
+      NULLIF(c.value->>'personTitle',''),
+      NULLIF(c.value->>'title','')
+    ) AS title,
+    COALESCE(
+      NULLIF(c.value->>'phoneNumber',''),
+      NULLIF(c.value->>'phone',''),
+      NULLIF(c.value->>'tel','')
+    ) AS phone,
     'json_contacts'::text AS fact_src
-  FROM company_resolved cr,
-       LATERAL (
-         CASE WHEN jsonb_typeof(cr.contacts_raw) = 'array' THEN cr.contacts_raw ELSE '[]'::jsonb END
-       ) arr,
-       LATERAL jsonb_array_elements(arr) AS c
+  FROM company_resolved cr
+  LEFT JOIN LATERAL jsonb_array_elements(
+    CASE
+      WHEN cr.contacts_raw IS NOT NULL AND jsonb_typeof(cr.contacts_raw) = 'array' THEN cr.contacts_raw
+      ELSE '[]'::jsonb
+    END
+  ) AS c(value) ON TRUE
 ),
 
 -- B) ATOMS from emails_all
@@ -307,7 +323,6 @@ ins_contacts AS (
     sb.best_email,
     util.phone_norm(sb.best_phone),
     NULL,
-    -- prefer company tied to best email among atoms in the seed
     (
       SELECT s2.company_id
       FROM seeds s2
