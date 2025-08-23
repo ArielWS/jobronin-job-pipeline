@@ -4,7 +4,7 @@
 
 SET search_path = public;
 
--- Required for gen_random_uuid()
+-- Needed for gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE SCHEMA IF NOT EXISTS gold;
@@ -85,8 +85,9 @@ CREATE TABLE IF NOT EXISTS gold.contact (
 
   generic_email           text,
 
-  primary_email_lower     text GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED,
-  generic_email_lower     text GENERATED ALWAYS AS (lower(btrim(generic_email))) STORED,
+  -- placeholders (we'll drop/re-add below to ensure correct GENERATED expression)
+  primary_email_lower     text,
+  generic_email_lower     text,
 
   country_guess           text,
   region_guess            text,
@@ -109,7 +110,7 @@ BEGIN
   END IF;
 END$$;
 
--- Ensure *_lower generated columns use TRIM+LOWER (recreate expressions if needed).
+-- Recreate the *_lower columns as proper GENERATED ALWAYS (drop & re-add is required)
 DO $$
 BEGIN
   -- primary_email_lower
@@ -117,27 +118,20 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_schema='gold' AND table_name='contact' AND column_name='primary_email_lower'
   ) THEN
-    -- normalize to our expression (drop & re-add as generated)
-    EXECUTE 'ALTER TABLE gold.contact ALTER COLUMN primary_email_lower DROP EXPRESSION';
-    EXECUTE 'ALTER TABLE gold.contact ALTER COLUMN primary_email_lower
-             ADD GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED';
-  ELSE
-    EXECUTE 'ALTER TABLE gold.contact
-             ADD COLUMN primary_email_lower text GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED';
+    EXECUTE 'ALTER TABLE gold.contact DROP COLUMN primary_email_lower';
   END IF;
+  EXECUTE 'ALTER TABLE gold.contact
+           ADD COLUMN primary_email_lower text GENERATED ALWAYS AS (lower(btrim(primary_email))) STORED';
 
   -- generic_email_lower
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema='gold' AND table_name='contact' AND column_name='generic_email_lower'
   ) THEN
-    EXECUTE 'ALTER TABLE gold.contact ALTER COLUMN generic_email_lower DROP EXPRESSION';
-    EXECUTE 'ALTER TABLE gold.contact ALTER COLUMN generic_email_lower
-             ADD GENERATED ALWAYS AS (lower(btrim(generic_email))) STORED';
-  ELSE
-    EXECUTE 'ALTER TABLE gold.contact
-             ADD COLUMN generic_email_lower text GENERATED ALWAYS AS (lower(btrim(generic_email))) STORED';
+    EXECUTE 'ALTER TABLE gold.contact DROP COLUMN generic_email_lower';
   END IF;
+  EXECUTE 'ALTER TABLE gold.contact
+           ADD COLUMN generic_email_lower text GENERATED ALWAYS AS (lower(btrim(generic_email))) STORED';
 END$$;
 
 -- Updated-at trigger
