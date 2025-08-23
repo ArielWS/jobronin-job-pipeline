@@ -342,7 +342,7 @@ seed_best AS (
 ),
 
 -- ======================
--- Insert contacts for seeds with no existing match
+-- Insert/Upsert contacts for seeds with no existing match
 -- ======================
 ins_contacts AS (
   INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
@@ -363,6 +363,13 @@ ins_contacts AS (
   WHERE sb.seed_key IN (
     SELECT seed_key FROM atoms_mapped WHERE contact_id_existing IS NULL
   )
+  ON CONFLICT ON CONSTRAINT ux_contact_primary_email_lower DO UPDATE
+    SET
+      full_name = COALESCE(EXCLUDED.full_name, gold.contact.full_name),
+      primary_phone = COALESCE(gold.contact.primary_phone, EXCLUDED.primary_phone),
+      title_raw = COALESCE(gold.contact.title_raw, EXCLUDED.title_raw),
+      primary_company_id = COALESCE(gold.contact.primary_company_id, EXCLUDED.primary_company_id),
+      updated_at = now()
   RETURNING contact_id, full_name, primary_email, primary_phone
 ),
 
