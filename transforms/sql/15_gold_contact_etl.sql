@@ -164,10 +164,8 @@ atoms AS (
     -- local normalized name (for matching only)
     NULLIF(util.person_name_norm(coalesce(a.person_name,'')),'')  AS name_norm_local,
 
-    -- phone normalization (soft)
-    CASE WHEN a.phone_raw ~ '\d'
-         THEN regexp_replace(a.phone_raw, '[^0-9+]', '', 'g')
-         ELSE NULL END AS phone_norm,
+    -- phone normalization (centralized helper)
+    util.phone_norm(a.phone_raw) AS phone_norm,
 
     -- email helpers
     CASE WHEN a.email IS NOT NULL THEN util.email_domain(a.email) END AS email_domain,
@@ -178,7 +176,7 @@ atoms AS (
 
     CASE
       WHEN a.email IS NULL THEN false
-      ELSE lower(split_part(a.email,'@',1)) ~* '^(info|career|careers|jobs|recruit|recruiting|hr|bewerbung|kontakt|hello|support|admin|office|team|sbv|service|mail|kontakt|karriere)$'
+      ELSE util.is_generic_mailbox(a.email)
     END AS is_generic_mailbox
   FROM atoms_pre a
 ),
@@ -343,7 +341,7 @@ candidates AS (
     CASE WHEN bps.best_email IS NULL THEN NULL
          ELSE util.is_generic_email_domain(util.email_domain(bps.best_email)) END AS is_generic_domain,
     CASE WHEN bps.best_email IS NULL THEN NULL
-         ELSE lower(split_part(bps.best_email,'@',1)) ~* '^(info|career|careers|jobs|recruit|recruiting|hr|bewerbung|kontakt|hello|support|admin|office|team|sbv|service|mail|kontakt|karriere)$' END AS is_generic_mailbox
+         ELSE util.is_generic_mailbox(bps.best_email) END AS is_generic_mailbox
   FROM best_per_seed bps
 ),
 
@@ -355,20 +353,46 @@ final_candidates AS (
 ),
 
 -- 8) UPSERT CONTACTS -----------------------------------------------------------
--- 8a) Email-based upsert (non-generic domain & mailbox)
+-- 8a) Email-based upsert (non-generic domain & mailbox) with per-email de-duplication
 ins_email AS (
+  WITH non_generic AS (
+    SELECT
+      lower(fc.email)         AS email_lower,
+      fc.full_name_best,
+      fc.phone_norm,
+      fc.title_raw,
+      fc.company_id,
+      fc.first_seen_at,
+      fc.last_seen_at
+    FROM final_candidates fc
+    WHERE fc.email IS NOT NULL
+      AND COALESCE(fc.is_generic_domain,false)  = false
+      AND COALESCE(fc.is_generic_mailbox,false) = false
+  ),
+  best_per_email AS (
+    SELECT DISTINCT ON (email_lower)
+      email_lower,
+      full_name_best,
+      phone_norm,
+      title_raw,
+      company_id,
+      first_seen_at,
+      last_seen_at
+    FROM non_generic
+    ORDER BY
+      email_lower,
+      last_seen_at DESC NULLS LAST,
+      first_seen_at ASC,
+      length(coalesce(full_name_best,'')) DESC
+  )
   INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
   SELECT
-    fc.full_name_best,
-    lower(fc.email)        AS primary_email,
-    fc.phone_norm          AS primary_phone,
-    fc.title_raw           AS title_raw,
-    fc.company_id          AS primary_company_id
-  FROM final_candidates fc
-  WHERE fc.email IS NOT NULL
-    AND COALESCE(fc.is_generic_domain,false) = false
-    AND COALESCE(fc.is_generic_mailbox,false) = false
-  -- index inference for ux_contact_primary_email_lower
+    b.full_name_best,
+    b.email_lower,
+    b.phone_norm,
+    b.title_raw,
+    b.company_id
+  FROM best_per_email b
   ON CONFLICT ((lower(primary_email))) WHERE primary_email IS NOT NULL
   DO UPDATE SET
     full_name          = COALESCE(EXCLUDED.full_name, gold.contact.full_name),
@@ -469,7 +493,8 @@ atoms_for_ev AS (
   SELECT
     a.source, a.source_id, a.source_row_url, a.scraped_at,
     a.company_id, a.email, a.name_norm_local, a.person_name, a.phone_norm,
-    a.person_title, a.fact_src
+    a.person_title, a.fact_src,
+    a.email_domain, a.email_root, a.is_generic_domain, a.is_generic_mailbox
   FROM atoms a
 ),
 atoms_with_contact AS (
@@ -492,7 +517,15 @@ ev_email AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
   SELECT DISTINCT
     awc.contact_id, 'email', lower(awc.email), awc.source, awc.source_id,
-    jsonb_build_object('from', awc.fact_src)
+    jsonb_build_object(
+      'from', awc.fact_src,
+      'is_generic_domain', COALESCE(awc.is_generic_domain,false),
+      'is_generic_mailbox', COALESCE(awc.is_generic_mailbox,false),
+      'email_domain', util.email_domain(awc.email),
+      'email_root', util.org_domain(util.email_domain(awc.email)),
+      'source_row_url', awc.source_row_url,
+      'scraped_at', awc.scraped_at
+    )
   FROM atoms_with_contact awc
   WHERE awc.contact_id IS NOT NULL
     AND awc.email IS NOT NULL
