@@ -1,7 +1,7 @@
 -- 15_gold_contact_etl.sql
 -- Contacts GOLD ETL (idempotent)
 -- Deterministic email-first person resolution, evidence capture,
--- affiliation writing, and safe merges (collapse name+company no-email dupes into the email keeper).
+-- affiliation writing, and safe merges.
 
 SET search_path = public, util, gold, silver;
 
@@ -50,8 +50,11 @@ src AS (
       NULLIF(us.contact_person_raw,'')                                        AS contact_person_raw,
       NULLIF(us.contact_phone_raw,'')                                         AS contact_phone_raw,
 
-      -- StepStone JSON contacts (already cleaned in silvers)
-      util.jsonb_safe(us.contacts_raw)                                        AS contacts_json
+      -- StepStone JSON contacts (already cleaned in silvers) — keep only if array/object
+      CASE
+        WHEN jsonb_typeof(us.contacts_raw) IN ('array','object') THEN us.contacts_raw
+        ELSE NULL::jsonb
+      END                                                                      AS contacts_json
   FROM silver.unified_silver us
 ),
 
@@ -158,11 +161,11 @@ atoms_pre AS (
   SELECT
     s.source, s.source_id, s.source_row_url, s.scraped_at, s.date_posted,
     rc.company_id,
-    NULL::text                    AS email,
+    NULL::text                      AS email,
     NULLIF(s.contact_person_raw,'') AS person_name,
-    NULL::text                    AS person_title,
-    NULLIF(s.contact_phone_raw,'') AS phone_raw,
-    'raw_contact_fields'::text    AS fact_src
+    NULL::text                      AS person_title,
+    NULLIF(s.contact_phone_raw,'')  AS phone_raw,
+    'raw_contact_fields'::text      AS fact_src
   FROM src s
   JOIN resolved_company rc USING (source, source_id)
 ),
@@ -608,7 +611,7 @@ promote_titles AS (
 SELECT 'ok' AS status;
 
 --------------------------------------------------------------------------------
--- SAFE MERGE: collapse no-email duplicates into the unique email-keeper
+-- SAFE MERGE #1: collapse no-email duplicates into the unique email-keeper
 --------------------------------------------------------------------------------
 WITH
 groups AS (
@@ -626,7 +629,6 @@ to_merge AS (
          keep_with_email                                 AS keep_id
   FROM groups
 ),
--- move aliases (if any)
 m_alias AS (
   INSERT INTO gold.contact_alias (contact_id, alias)
   SELECT t.keep_id, ca.alias
@@ -635,7 +637,6 @@ m_alias AS (
   ON CONFLICT (contact_id, alias_norm) DO NOTHING
   RETURNING contact_id
 ),
--- move evidence
 m_ev AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
   SELECT t.keep_id, ce.kind, ce.value, ce.source, ce.source_id, ce.detail
@@ -644,7 +645,6 @@ m_ev AS (
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING contact_id
 ),
--- move affiliations
 m_aff AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT t.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
@@ -660,5 +660,76 @@ m_aff AS (
 )
 DELETE FROM gold.contact c
 USING to_merge t
+WHERE c.contact_id = t.dup_id
+;
+
+--------------------------------------------------------------------------------
+-- SAFE MERGE #2: collapse duplicates where NONE has an email
+-- Keep the row with a phone first, then with a title, else the oldest.
+--------------------------------------------------------------------------------
+WITH
+groups0 AS (
+  SELECT name_norm, primary_company_id,
+         ARRAY_AGG(contact_id ORDER BY
+           (primary_phone IS NULL) ASC,
+           (title_raw IS NULL) ASC,
+           created_at ASC
+         ) AS ids
+  FROM gold.contact
+  WHERE name_norm IS NOT NULL
+    AND primary_company_id IS NOT NULL
+    AND primary_email IS NULL
+  GROUP BY 1,2
+  HAVING COUNT(*) > 1
+),
+to_merge0 AS (
+  SELECT
+    (ids[1]) AS keep_id,
+    unnest(ids[2:]) AS dup_id
+  FROM groups0
+),
+m0_alias AS (
+  INSERT INTO gold.contact_alias (contact_id, alias)
+  SELECT t.keep_id, ca.alias
+  FROM to_merge0 t
+  JOIN gold.contact_alias ca ON ca.contact_id=t.dup_id
+  ON CONFLICT (contact_id, alias_norm) DO NOTHING
+  RETURNING contact_id
+),
+m0_ev AS (
+  INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
+  SELECT t.keep_id, ce.kind, ce.value, ce.source, ce.source_id, ce.detail
+  FROM to_merge0 t
+  JOIN gold.contact_evidence ce ON ce.contact_id=t.dup_id
+  ON CONFLICT (contact_id, kind, value) DO NOTHING
+  RETURNING contact_id
+),
+m0_aff AS (
+  INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
+  SELECT t.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
+  FROM to_merge0 t
+  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  ON CONFLICT (contact_id, company_id) DO UPDATE
+    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
+        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
+        first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
+        last_seen = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
+        active = EXCLUDED.active
+  RETURNING contact_id
+),
+m0_generic AS (
+  -- if dup has generic_email and keeper lacks, promote it
+  UPDATE gold.contact keep
+  SET generic_email = COALESCE(keep.generic_email, dup.generic_email),
+      updated_at = now()
+  FROM to_merge0 t
+  JOIN gold.contact dup ON dup.contact_id = t.dup_id
+  WHERE keep.contact_id = t.keep_id
+    AND dup.generic_email IS NOT NULL
+    AND keep.generic_email IS NULL
+  RETURNING keep.contact_id
+)
+DELETE FROM gold.contact c
+USING to_merge0 t
 WHERE c.contact_id = t.dup_id
 ;
