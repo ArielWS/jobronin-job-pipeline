@@ -22,12 +22,23 @@ $$;
 -- Using UUID for contact_id (gen_random_uuid() from pgcrypto; enabled in 00_extensions.sql)
 CREATE TABLE IF NOT EXISTS gold.contact (
   contact_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- Best observed raw person name (nullable; email-only rows allowed)
   full_name               text,
-  name_norm               text, -- util.person_name_norm in ETL (kept as a regular column for control)
+
+  -- Person-aware normalized name (ALWAYS GENERATED from full_name)
+  name_norm               text GENERATED ALWAYS AS (util.person_name_norm(full_name)) STORED,
+
+  -- Non-generic person mailbox used for identity (lower is enforced via partial unique index)
   primary_email           text,
+
+  -- Soft phone normalization; keep raw variants in evidence
   primary_phone           text,
+
   primary_linkedin_slug   text,
   title_raw               text,
+
+  -- FK matches gold.company(company_id) BIGINT
   primary_company_id      bigint REFERENCES gold.company(company_id) ON DELETE SET NULL,
 
   -- store generic mailbox email separately (e.g., careers@, info@); not for matching
@@ -52,7 +63,7 @@ BEFORE UPDATE ON gold.contact
 FOR EACH ROW EXECUTE FUNCTION gold.set_updated_at();
 
 -- Unique expression index for dedup by email (non-null)
--- NOTE: this is an INDEX (not a CONSTRAINT), and ETL uses index inference to target it.
+-- NOTE: this is an INDEX (not a CONSTRAINT); ETL targets it via index inference.
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_primary_email_lower
 ON gold.contact ((lower(primary_email)))
 WHERE primary_email IS NOT NULL;
@@ -89,7 +100,7 @@ CREATE TABLE IF NOT EXISTS gold.contact_evidence (
   value       text NOT NULL,
   source      text,
   source_id   text,
-  detail      jsonb NOT NULL DEFAULT '{}'::jsonb,
+  detail      jsonb NOT NULL DEFAULT '{}'::jsonb,  -- includes provenance and classification flags
   created_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (contact_id, kind, value)
 );
