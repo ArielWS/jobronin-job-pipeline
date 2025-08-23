@@ -27,17 +27,18 @@ CREATE TABLE IF NOT EXISTS gold.contact (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Ensure generated helper column exists (for CI-unique upserts)
--- If the table already existed from an older version, this will add it now.
+-- Ensure generated helper column exists for CI-unique upserts
 ALTER TABLE gold.contact
   ADD COLUMN IF NOT EXISTS primary_email_lower text GENERATED ALWAYS AS (lower(primary_email)) STORED;
 
--- Clean up any legacy index from earlier iterations
-DROP INDEX IF EXISTS ux_contact_primary_email_lower;
--- Recreate as a UNIQUE CONSTRAINT (works with ON CONFLICT ON CONSTRAINT ...)
-ALTER TABLE gold.contact
-  DROP CONSTRAINT IF EXISTS ux_contact_primary_email_lower,
-  ADD CONSTRAINT ux_contact_primary_email_lower UNIQUE (primary_email_lower);
+-- We do NOT rely on a specific constraint name anymore.
+-- Just ensure *some* unique enforcement exists via a unique index (safe, idempotent).
+CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_email_lower_idx
+  ON gold.contact (primary_email_lower);
+
+-- Optional cleanup of an old index name (no-op if absent)
+-- (Leave any existing constraint with the old name alone to avoid name collisions)
+-- DROP INDEX IF EXISTS ux_contact_primary_email_lower;
 
 -- Unique linkedin slug when present
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_primary_linkedin_slug
