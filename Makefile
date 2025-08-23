@@ -60,8 +60,10 @@ sql-contacts:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04b_util_person_functions.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/14_gold_contact_schema.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/14b_gold_contact_schema_alter.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/15_gold_contact_etl.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/16_gold_contact_checks.sql
+
 
 sanity:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
