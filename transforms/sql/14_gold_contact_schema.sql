@@ -1,11 +1,65 @@
 -- 14_gold_contact_schema.sql
--- Schema for GOLD contacts: core tables, FKs, indexes, triggers.
+-- GOLD contacts: schema, constraints, triggers, and cleanup of legacy uniques.
 
 SET search_path = public;
 
 CREATE SCHEMA IF NOT EXISTS gold;
 
--- A tiny helper trigger to keep updated_at fresh
+-- -----------------------------------------------------------------------------
+-- Legacy cleanup: remove any global-unique on gold.contact_evidence.value
+-- -----------------------------------------------------------------------------
+DO $$
+BEGIN
+  -- If the table already exists, drop any legacy UNIQUE constraint/index
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema='gold' AND table_name='contact_evidence'
+  ) THEN
+    -- Drop a known legacy constraint name if present
+    IF EXISTS (
+      SELECT 1
+      FROM pg_constraint con
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN pg_namespace n ON n.oid = rel.relnamespace
+      WHERE n.nspname = 'gold'
+        AND rel.relname = 'contact_evidence'
+        AND con.contype = 'u'
+        AND con.conname = 'ux_contact_evidence_email_global'
+    ) THEN
+      EXECUTE 'ALTER TABLE gold.contact_evidence DROP CONSTRAINT ux_contact_evidence_email_global';
+    END IF;
+
+    -- Drop any UNIQUE index that enforces uniqueness on value / lower(value)
+    PERFORM 1
+    FROM pg_indexes
+    WHERE schemaname='gold' AND tablename='contact_evidence'
+      AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
+      AND (
+           indexdef ILIKE '%(value)%'
+        OR indexdef ILIKE '%lower(value)%'
+        OR indexdef ILIKE '%lower((value))%'
+      );
+    IF FOUND THEN
+      -- Drop all such indexes
+      FOR
+        SELECT indexname FROM pg_indexes
+        WHERE schemaname='gold' AND tablename='contact_evidence'
+          AND indexdef ILIKE 'CREATE UNIQUE INDEX%'
+          AND (
+               indexdef ILIKE '%(value)%'
+            OR indexdef ILIKE '%lower(value)%'
+            OR indexdef ILIKE '%lower((value))%'
+          )
+      LOOP
+        EXECUTE format('DROP INDEX IF EXISTS gold.%I', indexname);
+      END LOOP;
+    END IF;
+  END IF;
+END$$;
+
+-- -----------------------------------------------------------------------------
+-- Touch-updated-at trigger
+-- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION gold.set_updated_at()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -19,36 +73,26 @@ $$;
 -- -----------------------------------------------------------------------------
 -- gold.contact
 -- -----------------------------------------------------------------------------
--- Using UUID for contact_id (gen_random_uuid() from pgcrypto; enabled in 00_extensions.sql)
+-- UUID PK via pgcrypto.gen_random_uuid() (enabled in 00_extensions.sql)
 CREATE TABLE IF NOT EXISTS gold.contact (
   contact_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-
-  -- Best observed raw person name (nullable; email-only rows allowed)
   full_name               text,
-
-  -- Person-aware normalized name (ALWAYS GENERATED from full_name)
-  name_norm               text GENERATED ALWAYS AS (util.person_name_norm(full_name)) STORED,
-
-  -- Non-generic person mailbox used for identity (lower is enforced via partial unique index)
+  -- NOTE: kept as a regular column (not GENERATED) so we can migrate/override if needed.
+  name_norm               text,
   primary_email           text,
-
-  -- Soft phone normalization; keep raw variants in evidence
   primary_phone           text,
-
   primary_linkedin_slug   text,
   title_raw               text,
-
-  -- FK matches gold.company(company_id) BIGINT
   primary_company_id      bigint REFERENCES gold.company(company_id) ON DELETE SET NULL,
 
-  -- store generic mailbox email separately (e.g., careers@, info@); not for matching
+  -- generic mailbox (careers@, info@, etc.) for reference only
   generic_email           text,
 
-  -- convenience generated lowers (handy for QA/joins)
+  -- convenience lowers
   primary_email_lower     text GENERATED ALWAYS AS (lower(primary_email)) STORED,
   generic_email_lower     text GENERATED ALWAYS AS (lower(generic_email)) STORED,
 
-  -- optional geo hints (kept light for now)
+  -- optional geo hints
   country_guess           text,
   region_guess            text,
   city_guess              text,
@@ -62,8 +106,7 @@ CREATE TRIGGER trg_contact_updated_at
 BEFORE UPDATE ON gold.contact
 FOR EACH ROW EXECUTE FUNCTION gold.set_updated_at();
 
--- Unique expression index for dedup by email (non-null)
--- NOTE: this is an INDEX (not a CONSTRAINT); ETL targets it via index inference.
+-- Unique partial for email identity
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_primary_email_lower
 ON gold.contact ((lower(primary_email)))
 WHERE primary_email IS NOT NULL;
@@ -100,10 +143,14 @@ CREATE TABLE IF NOT EXISTS gold.contact_evidence (
   value       text NOT NULL,
   source      text,
   source_id   text,
-  detail      jsonb NOT NULL DEFAULT '{}'::jsonb,  -- includes provenance and classification flags
+  detail      jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (contact_id, kind, value)
 );
+
+-- (Non-unique helpers are fine, we avoid any global-unique on value)
+CREATE INDEX IF NOT EXISTS ix_contact_evidence_kind_value
+ON gold.contact_evidence (kind, value);
 
 -- -----------------------------------------------------------------------------
 -- gold.contact_affiliation
@@ -121,3 +168,7 @@ CREATE TABLE IF NOT EXISTS gold.contact_affiliation (
   created_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (contact_id, company_id)
 );
+
+-- Helpful lookup
+CREATE INDEX IF NOT EXISTS ix_contact_affil_company
+ON gold.contact_affiliation (company_id);
