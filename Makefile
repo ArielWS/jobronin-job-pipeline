@@ -54,8 +54,10 @@ sql-companies:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/13_gold_company_checks.sql
 
 # Explicit contacts SQL sequence
-# Assumes company gold already built (run `sql-companies` first or use `pipeline`)
+# NOTE: now includes extensions + core utils to guarantee prerequisites
 sql-contacts:
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_extensions.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04b_util_person_functions.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/14_gold_contact_schema.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/15_gold_contact_etl.sql
