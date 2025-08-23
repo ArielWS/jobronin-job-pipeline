@@ -4,7 +4,6 @@
 SET search_path = public;
 
 CREATE SCHEMA IF NOT EXISTS gold;
-CREATE SCHEMA IF NOT EXISTS util;
 
 -- ----------------------------
 -- gold.contact
@@ -27,32 +26,27 @@ CREATE TABLE IF NOT EXISTS gold.contact (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Ensure generated helper column exists for CI-unique upserts
+-- helper generated col for case-insensitive uniqueness/upsert
 ALTER TABLE gold.contact
   ADD COLUMN IF NOT EXISTS primary_email_lower text GENERATED ALWAYS AS (lower(primary_email)) STORED;
 
--- We do NOT rely on a specific constraint name anymore.
--- Just ensure *some* unique enforcement exists via a unique index (safe, idempotent).
+-- enforce uniqueness via a unique index (name chosen to avoid clashes)
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_email_lower_idx
   ON gold.contact (primary_email_lower);
 
--- Optional cleanup of an old index name (no-op if absent)
--- (Leave any existing constraint with the old name alone to avoid name collisions)
--- DROP INDEX IF EXISTS ux_contact_primary_email_lower;
-
--- Unique linkedin slug when present
+-- linkedin slug unique when present
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_primary_linkedin_slug
   ON gold.contact (primary_linkedin_slug)
   WHERE primary_linkedin_slug IS NOT NULL;
 
--- Helpful for weak matching / QA
+-- helpful for weak matching / QA
 CREATE INDEX IF NOT EXISTS ix_contact_name_norm_company
   ON gold.contact (name_norm, primary_company_id);
 
 CREATE INDEX IF NOT EXISTS ix_contact_primary_company
   ON gold.contact (primary_company_id);
 
--- Touch updated_at on UPDATE
+-- touch updated_at on UPDATE
 DROP TRIGGER IF EXISTS trg_contact_touch ON gold.contact;
 CREATE TRIGGER trg_contact_touch
 BEFORE UPDATE ON gold.contact
@@ -84,7 +78,7 @@ CREATE TABLE IF NOT EXISTS gold.contact_evidence (
   PRIMARY KEY (contact_id, kind, value)
 );
 
--- One person per email / linkedin globally (prevents same anchor on two people)
+-- global uniqueness helpers (optional but nice protection)
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contact_evidence_email_global
   ON gold.contact_evidence (value)
   WHERE kind = 'email';
@@ -115,8 +109,11 @@ CREATE INDEX IF NOT EXISTS ix_contact_aff_active ON gold.contact_affiliation (ac
 
 -- ----------------------------
 -- Rollup view: gold.contact_plus
+-- (Drop first to avoid column remapping issues when base columns change)
 -- ----------------------------
-CREATE OR REPLACE VIEW gold.contact_plus AS
+DROP VIEW IF EXISTS gold.contact_plus;
+
+CREATE VIEW gold.contact_plus AS
 WITH emails AS (
   SELECT
     ce.contact_id,
