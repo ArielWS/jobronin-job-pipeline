@@ -1,7 +1,7 @@
 -- 15_gold_contact_etl.sql
 -- Contacts GOLD ETL (idempotent)
 -- Email-first person resolution; evidence capture; affiliations; safe merges.
--- IMPORTANT: Do NOT write to gold.contact.name_norm if you later switch it to GENERATED.
+-- IMPORTANT: Never write to gold.contact.name_norm (supports GENERATED columns).
 
 SET search_path = public, util, gold, silver;
 
@@ -192,7 +192,7 @@ email_name_pairs AS (
 
 -- 4) SEEDS ---------------------------------------------------------------------
 seeds AS (
-  -- email-seeded groups (note: grouped by company too; we’ll collapse by email later)
+  -- email-seeded groups (grouped by company too; we’ll collapse by email later)
   SELECT
     'email'::text       AS seed_kind,
     lower(email)        AS seed_key,
@@ -383,14 +383,13 @@ email_one AS (
 -- 8) UPSERT CONTACTS -----------------------------------------------------------
 -- 8a) Email-based upsert (non-generic domain & mailbox), using email_one to avoid duplicates
 ins_email AS (
-  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id, name_norm)
+  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
   SELECT
     eo.full_name_best,
     lower(eo.email)       AS primary_email,
     eo.phone_norm         AS primary_phone,
     eo.title_raw          AS title_raw,
-    eo.company_id         AS primary_company_id,
-    eo.name_norm_local    AS name_norm
+    eo.company_id         AS primary_company_id
   FROM email_one eo
   WHERE eo.email IS NOT NULL
     AND COALESCE(eo.is_generic_domain,false)  = false
@@ -402,7 +401,6 @@ ins_email AS (
     primary_phone      = COALESCE(EXCLUDED.primary_phone, gold.contact.primary_phone),
     title_raw          = COALESCE(EXCLUDED.title_raw, gold.contact.title_raw),
     primary_company_id = COALESCE(EXCLUDED.primary_company_id, gold.contact.primary_company_id),
-    name_norm          = COALESCE(gold.contact.name_norm, EXCLUDED.name_norm),
     updated_at         = now()
   RETURNING contact_id, lower(primary_email) AS primary_email_lower
 ),
@@ -463,15 +461,14 @@ matched AS (
    AND c.primary_company_id = s.company_id
 ),
 ins_no_email AS (
-  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id, generic_email, name_norm)
+  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id, generic_email)
   SELECT
     m.full_name_best,
     NULL::text,
     m.phone_norm,
     m.title_raw,
     m.company_id,
-    CASE WHEN m.seed_kind='email' THEN lower(m.seed_key) ELSE NULL::text END,
-    m.name_norm_local
+    CASE WHEN m.seed_kind='email' THEN lower(m.seed_key) ELSE NULL::text END
   FROM matched m
   WHERE m.existing_contact_id IS NULL
   RETURNING contact_id, primary_company_id
@@ -484,7 +481,6 @@ upd_no_email AS (
     title_raw     = COALESCE(c.title_raw, m.title_raw),
     generic_email = COALESCE(c.generic_email,
                              CASE WHEN m.seed_kind='email' THEN lower(m.seed_key) ELSE NULL END),
-    name_norm     = COALESCE(c.name_norm, m.name_norm_local),
     updated_at    = now()
   FROM matched m
   WHERE m.existing_contact_id IS NOT NULL
