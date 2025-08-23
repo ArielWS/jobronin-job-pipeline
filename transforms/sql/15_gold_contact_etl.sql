@@ -380,31 +380,13 @@ email_one AS (
   WHERE rn = 1
 ),
 
--- 8) UPSERT CONTACTS -----------------------------------------------------------
--- 8a) Email-based upsert (non-generic), using email_one to avoid duplicates
-ins_email AS (
-  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
-  SELECT
-    eo.full_name_best,
-    lower(eo.email)       AS primary_email,
-    eo.phone_norm         AS primary_phone,
-    eo.title_raw          AS title_raw,
-    eo.company_id         AS primary_company_id
-  FROM email_one eo
-  WHERE eo.email IS NOT NULL
-    AND COALESCE(eo.is_generic_domain,false)  = false
-    AND COALESCE(eo.is_generic_mailbox,false) = false
-  ON CONFLICT ((lower(primary_email))) WHERE primary_email IS NOT NULL
-  DO UPDATE SET
-    full_name          = COALESCE(EXCLUDED.full_name, gold.contact.full_name),
-    primary_phone      = COALESCE(EXCLUDED.primary_phone, gold.contact.primary_phone),
-    title_raw          = COALESCE(EXCLUDED.title_raw, gold.contact.title_raw),
-    primary_company_id = COALESCE(EXCLUDED.primary_company_id, gold.contact.primary_company_id),
-    updated_at         = now()
-  RETURNING contact_id, lower(primary_email) AS primary_email_lower
+-- Convenience splits
+email_non_generic AS (
+  SELECT *
+  FROM email_one
+  WHERE COALESCE(is_generic_domain,false) = false
+    AND COALESCE(is_generic_mailbox,false) = false
 ),
-
--- 8b) Generic mailbox/domain emails → stash as generic_email (not for resolution)
 generic_email_targets AS (
   SELECT DISTINCT
     lower(fc.email) AS generic_email_lower,
@@ -423,7 +405,36 @@ generic_email_targets AS (
     )
 ),
 
--- 8c) Name+company upsert for (no email) or generic-only email
+-- 8) UPSERT CONTACTS (two-step: UPDATE existing, then INSERT new) -------------
+upd_email_existing AS (
+  UPDATE gold.contact c
+  SET
+    full_name          = COALESCE(eo.full_name_best, c.full_name),
+    primary_phone      = COALESCE(eo.phone_norm, c.primary_phone),
+    title_raw          = COALESCE(eo.title_raw, c.title_raw),
+    primary_company_id = COALESCE(eo.company_id, c.primary_company_id),
+    updated_at         = now()
+  FROM email_non_generic eo
+  WHERE lower(c.primary_email) = eo.email_lower
+  RETURNING c.contact_id, lower(c.primary_email) AS email_lower
+),
+ins_email_new AS (
+  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
+  SELECT
+    eo.full_name_best,
+    eo.email_lower        AS primary_email,
+    eo.phone_norm         AS primary_phone,
+    eo.title_raw          AS title_raw,
+    eo.company_id         AS primary_company_id
+  FROM email_non_generic eo
+  WHERE NOT EXISTS (
+    SELECT 1 FROM gold.contact c WHERE lower(c.primary_email) = eo.email_lower
+  )
+  ON CONFLICT DO NOTHING
+  RETURNING contact_id, lower(primary_email) AS email_lower
+),
+
+-- 8c) Name+company upsert for (no email) or generic-only email ----------------
 selected_name_company AS (
   SELECT seed_kind, seed_key, company_id, name_norm_local, full_name_best, phone_norm, title_raw
   FROM final_candidates
@@ -432,7 +443,6 @@ selected_name_company AS (
   SELECT seed_kind, seed_key, company_id, name_norm_local, full_name_best, phone_norm, title_raw
   FROM generic_email_targets
 ),
--- collapse duplicates for the same (name_norm_local, company_id) to 1 row
 selected_name_company_one AS (
   SELECT *
   FROM (
@@ -487,15 +497,13 @@ upd_no_email AS (
   RETURNING c.contact_id
 ),
 
--- 8d) Attach generic email to email-contacts if address matches (rare)
+-- 8d) Attach generic email to email-contacts if address matches ---------------
 attach_generic_to_email_contacts AS (
   UPDATE gold.contact c
   SET generic_email = COALESCE(c.generic_email, g.generic_email_lower),
       updated_at    = now()
   FROM generic_email_targets g
-  JOIN ins_email ie
-    ON ie.primary_email_lower = g.generic_email_lower
-  WHERE lower(c.primary_email) = ie.primary_email_lower
+  WHERE lower(c.primary_email) = g.generic_email_lower
   RETURNING c.contact_id
 ),
 
@@ -588,7 +596,7 @@ ev_alias AS (
 ),
 
 -- 12) AFFILIATIONS -------------------------------------------------------------
--- Roll up to ONE row per (contact_id, company_id) before upsert, then enforce rn=1
+-- Roll up to ONE row per (contact_id, company_id) before insert
 aff_rollup AS (
   SELECT
     awc.contact_id,
@@ -600,33 +608,29 @@ aff_rollup AS (
     AND awc.company_id IS NOT NULL
   GROUP BY 1,2
 ),
-aff_rollup_one AS (
-  SELECT *
-  FROM (
-    SELECT
-      ar.*,
-      ROW_NUMBER() OVER (PARTITION BY contact_id, company_id ORDER BY last_seen DESC, first_seen ASC) AS rn
-    FROM aff_rollup ar
-  ) z
-  WHERE rn = 1
-),
-aff_upsert AS (
+aff_insert AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
     a.contact_id, a.company_id, NULL::text, NULL::text,
     a.first_seen, a.last_seen,
     CASE WHEN a.last_seen >= now() - interval '180 days' THEN true ELSE false END,
     NULL::text, NULL::text
-  FROM aff_rollup_one a
-  ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET role      = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
-        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
-        first_seen= LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
-        last_seen = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
-        active    = EXCLUDED.active,
-        source    = COALESCE(EXCLUDED.source, gold.contact_affiliation.source),
-        source_id = COALESCE(EXCLUDED.source_id, gold.contact_affiliation.source_id)
+  FROM aff_rollup a
+  ON CONFLICT DO NOTHING
   RETURNING contact_id
+),
+aff_update AS (
+  UPDATE gold.contact_affiliation tgt
+  SET
+    role       = COALESCE(tgt.role, NULL),
+    seniority  = COALESCE(tgt.seniority, NULL),
+    first_seen = LEAST(tgt.first_seen, src.first_seen),
+    last_seen  = GREATEST(tgt.last_seen, src.last_seen),
+    active     = CASE WHEN src.last_seen >= now() - interval '180 days' THEN true ELSE tgt.active END
+  FROM aff_rollup src
+  WHERE tgt.contact_id = src.contact_id
+    AND tgt.company_id = src.company_id
+  RETURNING tgt.contact_id
 ),
 
 -- 13) PROMOTE TITLES -----------------------------------------------------------
@@ -697,7 +701,6 @@ m_alias AS (
   FROM to_merge t
   JOIN gold.contact_alias ca ON ca.contact_id=t.dup_id
   ON CONFLICT (contact_id, alias_norm) DO NOTHING
-  RETURNING contact_id
 ),
 m_ev AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
@@ -705,42 +708,30 @@ m_ev AS (
   FROM to_merge t
   JOIN gold.contact_evidence ce ON ce.contact_id=t.dup_id
   ON CONFLICT (contact_id, kind, value) DO NOTHING
-  RETURNING contact_id
 ),
--- Roll up affiliations per (keep_id, company_id) to avoid double-touches
-m_aff_rollup AS (
-  SELECT
-    t.keep_id         AS contact_id,
-    a.company_id      AS company_id,
-    MIN(a.first_seen) AS first_seen,
-    MAX(a.last_seen)  AS last_seen,
-    BOOL_OR(a.active) AS active
-  FROM to_merge t
-  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
-  GROUP BY 1,2
-),
-m_aff_rollup_one AS (
-  SELECT *
-  FROM (
-    SELECT
-      r.*,
-      ROW_NUMBER() OVER (PARTITION BY contact_id, company_id ORDER BY last_seen DESC, first_seen ASC) AS rn
-    FROM m_aff_rollup r
-  ) z
-  WHERE rn = 1
-),
-m_aff AS (
+m_aff_insert AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
-    r.contact_id, r.company_id, NULL::text, NULL::text, r.first_seen, r.last_seen, r.active, NULL::text, NULL::text
-  FROM m_aff_rollup_one r
-  ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
-        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
-        first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
-        last_seen = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
-        active = EXCLUDED.active
-  RETURNING contact_id
+    t.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
+  FROM to_merge t
+  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  ON CONFLICT DO NOTHING
+),
+m_aff_update AS (
+  UPDATE gold.contact_affiliation tgt
+  SET
+    role       = COALESCE(tgt.role, src.role),
+    seniority  = COALESCE(tgt.seniority, src.seniority),
+    first_seen = LEAST(tgt.first_seen, src.first_seen),
+    last_seen  = GREATEST(tgt.last_seen, src.last_seen),
+    active     = src.active
+  FROM (
+    SELECT t.keep_id AS contact_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active
+    FROM to_merge t
+    JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  ) src
+  WHERE tgt.contact_id = src.contact_id
+    AND tgt.company_id = src.company_id
 )
 DELETE FROM gold.contact c
 USING to_merge t
@@ -775,7 +766,6 @@ m0_alias AS (
   FROM to_merge0 t
   JOIN gold.contact_alias ca ON ca.contact_id=t.dup_id
   ON CONFLICT (contact_id, alias_norm) DO NOTHING
-  RETURNING contact_id
 ),
 m0_ev AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
@@ -783,42 +773,30 @@ m0_ev AS (
   FROM to_merge0 t
   JOIN gold.contact_evidence ce ON ce.contact_id=t.dup_id
   ON CONFLICT (contact_id, kind, value) DO NOTHING
-  RETURNING contact_id
 ),
--- Roll up affiliations per (keep_id, company_id), ensure rn=1
-m0_aff_rollup AS (
-  SELECT
-    t.keep_id         AS contact_id,
-    a.company_id      AS company_id,
-    MIN(a.first_seen) AS first_seen,
-    MAX(a.last_seen)  AS last_seen,
-    BOOL_OR(a.active) AS active
-  FROM to_merge0 t
-  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
-  GROUP BY 1,2
-),
-m0_aff_rollup_one AS (
-  SELECT *
-  FROM (
-    SELECT
-      r.*,
-      ROW_NUMBER() OVER (PARTITION BY contact_id, company_id ORDER BY last_seen DESC, first_seen ASC) AS rn
-    FROM m0_aff_rollup r
-  ) z
-  WHERE rn = 1
-),
-m0_aff AS (
+m0_aff_insert AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
   SELECT
-    r.contact_id, r.company_id, NULL::text, NULL::text, r.first_seen, r.last_seen, r.active, NULL::text, NULL::text
-  FROM m0_aff_rollup_one r
-  ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
-        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
-        first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
-        last_seen = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
-        active = EXCLUDED.active
-  RETURNING contact_id
+    t.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
+  FROM to_merge0 t
+  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  ON CONFLICT DO NOTHING
+),
+m0_aff_update AS (
+  UPDATE gold.contact_affiliation tgt
+  SET
+    role       = COALESCE(tgt.role, src.role),
+    seniority  = COALESCE(tgt.seniority, src.seniority),
+    first_seen = LEAST(tgt.first_seen, src.first_seen),
+    last_seen  = GREATEST(tgt.last_seen, src.last_seen),
+    active     = src.active
+  FROM (
+    SELECT t.keep_id AS contact_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active
+    FROM to_merge0 t
+    JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  ) src
+  WHERE tgt.contact_id = src.contact_id
+    AND tgt.company_id = src.company_id
 ),
 m0_generic AS (
   UPDATE gold.contact keep
@@ -829,7 +807,6 @@ m0_generic AS (
   WHERE keep.contact_id = t.keep_id
     AND dup.generic_email IS NOT NULL
     AND keep.generic_email IS NULL
-  RETURNING keep.contact_id
 )
 DELETE FROM gold.contact c
 USING to_merge0 t
