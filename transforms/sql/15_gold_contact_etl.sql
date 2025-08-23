@@ -1,6 +1,7 @@
 -- transforms/sql/15_gold_contact_etl.sql
 -- Deterministic, idempotent ETL to populate gold.contact* from silver.unified_silver
--- Uses ON CONFLICT (primary_email_lower) so it works with either a unique index or constraint.
+-- Uses ON CONFLICT (primary_email_lower) and de-dupes inserts per email to avoid
+-- "ON CONFLICT DO UPDATE command cannot affect row a second time".
 
 SET search_path = public;
 
@@ -166,6 +167,7 @@ atoms_eligible AS (
      OR phone IS NOT NULL
 ),
 
+-- Existing matches by strong/weak keys
 existing_by_email AS (
   SELECT DISTINCT a.source, a.source_id, a.email, ce.contact_id
   FROM atoms_eligible a
@@ -187,6 +189,7 @@ existing_by_phone_company AS (
   WHERE a.phone_norm IS NOT NULL AND a.company_id IS NOT NULL
 ),
 
+-- Build per-atom seed keys
 seeds AS (
   SELECT a.*,
          CASE
@@ -215,6 +218,7 @@ atoms_mapped AS (
    AND epc.phone_norm=s.phone_norm AND epc.company_id=s.company_id
 ),
 
+-- Best text per seed_key
 seed_best AS (
   SELECT
     seed_key,
@@ -225,46 +229,105 @@ seed_best AS (
   GROUP BY seed_key
 ),
 
--- Upsert by column (works with a unique index)
-ins_contacts AS (
-  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
+-- Only seeds that don't map to an existing contact
+cand_seeds AS (
+  SELECT am.seed_key
+  FROM atoms_mapped am
+  WHERE am.contact_id_existing IS NULL
+),
+
+-- Metadata for ranking: latest scrape + has_name per seed
+seed_meta AS (
+  SELECT s.seed_key,
+         max(s.scraped_at) AS latest_scraped,
+         bool_or(s.person_name IS NOT NULL) AS has_name
+  FROM seeds s
+  GROUP BY s.seed_key
+),
+
+-- Enrich bests with metadata and company choice
+seed_best_aug AS (
   SELECT
+    sb.seed_key,
     sb.best_name,
     sb.best_email,
-    util.phone_norm(sb.best_phone),
-    NULL,
+    sb.best_phone,
+    sm.latest_scraped,
+    sm.has_name,
     (
       SELECT s2.company_id
       FROM seeds s2
       WHERE s2.seed_key = sb.seed_key
       ORDER BY (s2.email = sb.best_email) DESC NULLS LAST, s2.scraped_at DESC
       LIMIT 1
-    )
+    ) AS best_company_id
   FROM seed_best sb
-  WHERE sb.seed_key IN (SELECT seed_key FROM atoms_mapped WHERE contact_id_existing IS NULL)
+  JOIN cand_seeds cs USING (seed_key)
+  LEFT JOIN seed_meta sm ON sm.seed_key = sb.seed_key
+),
+
+-- Winner per email (avoid multi-update in ON CONFLICT)
+winners_email AS (
+  SELECT DISTINCT ON (lower(best_email))
+    seed_key, best_name, best_email, best_phone, best_company_id
+  FROM seed_best_aug
+  WHERE best_email IS NOT NULL
+  ORDER BY lower(best_email), has_name DESC, latest_scraped DESC, seed_key
+),
+
+-- Keep the seeds with no email (no conflict risk)
+winners_no_email AS (
+  SELECT seed_key, best_name, best_email, best_phone, best_company_id
+  FROM seed_best_aug
+  WHERE best_email IS NULL
+),
+
+final_candidates AS (
+  SELECT * FROM winners_email
+  UNION ALL
+  SELECT * FROM winners_no_email
+),
+
+-- Upsert by column (works with a unique index)
+ins_contacts AS (
+  INSERT INTO gold.contact (full_name, primary_email, primary_phone, title_raw, primary_company_id)
+  SELECT
+    fc.best_name,
+    fc.best_email,
+    util.phone_norm(fc.best_phone),
+    NULL,
+    fc.best_company_id
+  FROM final_candidates fc
   ON CONFLICT (primary_email_lower) DO UPDATE
     SET full_name = COALESCE(EXCLUDED.full_name, gold.contact.full_name),
         primary_phone = COALESCE(gold.contact.primary_phone, EXCLUDED.primary_phone),
         title_raw = COALESCE(gold.contact.title_raw, EXCLUDED.title_raw),
         primary_company_id = COALESCE(gold.contact.primary_company_id, EXCLUDED.primary_company_id),
         updated_at = now()
-  RETURNING contact_id, full_name, primary_email, primary_phone
+  RETURNING contact_id, primary_email
 ),
 
+-- Map inserted primary_email -> contact_id for downstream mapping
+inserted_map AS (
+  SELECT primary_email, contact_id FROM ins_contacts
+),
+
+-- Final mapping: every atom/seed -> contact_id (existing OR newly inserted by email)
 atom_contact AS (
   SELECT
     am.source, am.source_id, am.seed_key,
     COALESCE(
       am.contact_id_existing,
-      (SELECT ic.contact_id
-       FROM ins_contacts ic
-       WHERE ic.primary_email IS NOT DISTINCT FROM (SELECT best_email FROM seed_best WHERE seed_key=am.seed_key)
-         AND ic.full_name     IS NOT DISTINCT FROM (SELECT best_name  FROM seed_best WHERE seed_key=am.seed_key)
+      (SELECT im.contact_id
+       FROM inserted_map im
+       WHERE im.primary_email IS NOT DISTINCT FROM
+             (SELECT best_email FROM seed_best WHERE seed_key = am.seed_key)
        LIMIT 1)
     ) AS contact_id
   FROM atoms_mapped am
 ),
 
+-- Aliases (all observed names)
 ins_aliases AS (
   INSERT INTO gold.contact_alias (contact_id, alias, primary_flag)
   SELECT DISTINCT ac.contact_id, a.person_name, false
@@ -275,6 +338,7 @@ ins_aliases AS (
   RETURNING 1
 ),
 
+-- Set one primary alias per contact (prefer the seed's best_name)
 ins_primary_alias AS (
   INSERT INTO gold.contact_alias (contact_id, alias, primary_flag)
   SELECT DISTINCT ac.contact_id,
@@ -286,6 +350,7 @@ ins_primary_alias AS (
   RETURNING 1
 ),
 
+-- Evidence
 ins_ev_email AS (
   INSERT INTO gold.contact_evidence (contact_id, kind, value, source, source_id, detail)
   SELECT DISTINCT ac.contact_id, 'email', a.email, a.source, a.source_id,
@@ -354,6 +419,7 @@ ins_ev_company_hint AS (
   RETURNING 1
 ),
 
+-- Affiliations
 aff_src AS (
   SELECT
     ac.contact_id,
@@ -385,6 +451,7 @@ aff_upsert AS (
   RETURNING 1
 ),
 
+-- Promote primaries after evidence/affiliation are in
 promote_primary AS (
   UPDATE gold.contact c
   SET
