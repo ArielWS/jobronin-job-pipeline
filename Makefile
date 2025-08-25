@@ -40,7 +40,7 @@ nightly:
 	python orchestration/run_nightly.py
 
 # Explicit company SQL sequence (unchanged order)
-sql-companies:
+sql-silver:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_extensions.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_jobspy_raw.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
@@ -48,21 +48,25 @@ sql-companies:
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_profesia_sk.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/02_silver_stepstone.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/03_unified_stage.sql
+
+
+# Explicit contacts SQL sequence
+# NOTE: now includes extensions + core utils to guarantee prerequisites
+sql-gold:
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_extensions.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04b_util_person_functions.sql
+	# ensure company tables exist before contacts
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/10_gold_company.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/11_gold_company_brand_rules.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/12_gold_company_etl.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/13_gold_company_checks.sql
-
-# Explicit contacts SQL sequence
-# NOTE: now includes extensions + core utils to guarantee prerequisites
-sql-contacts:
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/00_extensions.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04_util_functions.sql
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/04b_util_person_functions.sql
+	# now contacts
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/14_gold_contact_schema.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/14b_gold_contact_schema_alter.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/15_gold_contact_etl.sql
 	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f transforms/sql/16_gold_contact_checks.sql
+
 
 
 sanity:
