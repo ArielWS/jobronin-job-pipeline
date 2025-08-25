@@ -286,19 +286,21 @@ best_per_seed AS (
         FROM unnest(s.atom_rows) a
         WHERE NULLIF(a->>'person_name','') IS NOT NULL
         ORDER BY
-          CASE WHEN lower(btrim(a->>'email')) = lower(btrim((
-             SELECT a2->>'email'
-             FROM (
-               SELECT (a2)::jsonb AS a2
-               FROM unnest(s.atom_rows) a2
-               WHERE (a2->>'email') IS NOT NULL
-               ORDER BY
-                 ((a2->>'is_generic_domain')::boolean) ASC,
-                 ((a2->>'is_generic_mailbox')::boolean) ASC,
-                 (a2->>'scraped_at')::timestamptz ASC
-               LIMIT 1
-             ) e4
-           ))) THEN 0 ELSE 1 END,
+          CASE
+            WHEN lower(btrim(a->>'email')) = lower(btrim((
+              SELECT a2->>'email'
+              FROM (
+                SELECT (a2)::jsonb AS a2
+                FROM unnest(s.atom_rows) a2
+                WHERE (a2->>'email') IS NOT NULL
+                ORDER BY
+                  ((a2->>'is_generic_domain')::boolean) ASC,
+                  ((a2->>'is_generic_mailbox')::boolean) ASC,
+                  (a2->>'scraped_at')::timestamptz ASC
+                LIMIT 1
+              ) e4
+            ))) THEN 0 ELSE 1
+          END,
           length(a->>'person_name') DESC,
           (a->>'scraped_at')::timestamptz ASC
       ) z
@@ -547,18 +549,19 @@ ev_alias AS (
 ),
 
 -- 12) AFFILIATIONS -------------------------------------------------------------
+-- IMPORTANT: aggregate to ONE row per (contact_id, company_id) before upsert.
 aff_base AS (
-  SELECT DISTINCT
+  SELECT
     awc.contact_id,
     awc.company_id,
     MIN(awc.scraped_at)::timestamptz AS first_seen,
     MAX(awc.scraped_at)::timestamptz AS last_seen,
-    awc.source,
-    awc.source_id
+    MIN(awc.source)    AS source,
+    MIN(awc.source_id) AS source_id
   FROM atoms_with_contact awc
   WHERE awc.contact_id IS NOT NULL
     AND awc.company_id IS NOT NULL
-  GROUP BY 1,2,5,6
+  GROUP BY awc.contact_id, awc.company_id
 ),
 aff_upsert AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
@@ -612,7 +615,7 @@ promote_titles AS (
 SELECT 'ok' AS status;
 
 -- =============================================================================
--- SAFE MERGE #1: keep the single email-contact, merge no-email duplicates into it
+-- SAFE MERGE #1: merge no-email duplicates into the email contact
 -- =============================================================================
 WITH
 email_contacts AS (
@@ -650,14 +653,29 @@ m_ev AS (
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING contact_id
 ),
-m_aff AS (
-  INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
-  SELECT p.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
+-- aggregate affiliations per (keep_id, company_id) BEFORE upsert
+m_aff_in AS (
+  SELECT
+    p.keep_id AS contact_id,
+    a.company_id,
+    MIN(a.first_seen) AS first_seen,
+    MAX(a.last_seen)  AS last_seen,
+    BOOL_OR(a.active) AS active,
+    MIN(a.role)       AS role,
+    MIN(a.seniority)  AS seniority,
+    MIN(a.source)     AS source,
+    MIN(a.source_id)  AS source_id
   FROM pairs p
   JOIN gold.contact_affiliation a ON a.contact_id=p.dup_id
+  GROUP BY p.keep_id, a.company_id
+),
+m_aff AS (
+  INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
+  SELECT contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id
+  FROM m_aff_in
   ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
-        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
+    SET role       = COALESCE(EXCLUDED.role,       gold.contact_affiliation.role),
+        seniority  = COALESCE(EXCLUDED.seniority,  gold.contact_affiliation.seniority),
         first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
         last_seen  = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
         active     = EXCLUDED.active
@@ -706,14 +724,29 @@ m0_ev AS (
   ON CONFLICT (contact_id, kind, value) DO NOTHING
   RETURNING contact_id
 ),
+-- aggregate affiliations per (keep_id, company_id) BEFORE upsert
+m0_aff_in AS (
+  SELECT
+    t.keep_id      AS contact_id,
+    a.company_id   AS company_id,
+    MIN(a.first_seen) AS first_seen,
+    MAX(a.last_seen)  AS last_seen,
+    BOOL_OR(a.active) AS active,
+    MIN(a.role)       AS role,
+    MIN(a.seniority)  AS seniority,
+    MIN(a.source)     AS source,
+    MIN(a.source_id)  AS source_id
+  FROM to_merge t
+  JOIN gold.contact_affiliation a ON a.contact_id = t.dup_id
+  GROUP BY t.keep_id, a.company_id
+),
 m0_aff AS (
   INSERT INTO gold.contact_affiliation (contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id)
-  SELECT t.keep_id, a.company_id, a.role, a.seniority, a.first_seen, a.last_seen, a.active, a.source, a.source_id
-  FROM to_merge t
-  JOIN gold.contact_affiliation a ON a.contact_id=t.dup_id
+  SELECT contact_id, company_id, role, seniority, first_seen, last_seen, active, source, source_id
+  FROM m0_aff_in
   ON CONFLICT (contact_id, company_id) DO UPDATE
-    SET role = COALESCE(EXCLUDED.role, gold.contact_affiliation.role),
-        seniority = COALESCE(EXCLUDED.seniority, gold.contact_affiliation.seniority),
+    SET role       = COALESCE(EXCLUDED.role,       gold.contact_affiliation.role),
+        seniority  = COALESCE(EXCLUDED.seniority,  gold.contact_affiliation.seniority),
         first_seen = LEAST(gold.contact_affiliation.first_seen, EXCLUDED.first_seen),
         last_seen  = GREATEST(gold.contact_affiliation.last_seen, EXCLUDED.last_seen),
         active     = EXCLUDED.active
