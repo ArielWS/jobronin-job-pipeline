@@ -298,7 +298,7 @@ best_per_seed AS (
                  (a2->>'scraped_at')::timestamptz ASC
                LIMIT 1
              ) e4
-           )) THEN 0 ELSE 1 END,
+           ))) THEN 0 ELSE 1 END,
           length(a->>'person_name') DESC,
           (a->>'scraped_at')::timestamptz ASC
       ) z
