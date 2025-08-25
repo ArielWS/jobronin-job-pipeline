@@ -1,6 +1,13 @@
--include .env
+# Makefile — ensure .env vars are exported to recipe shells
 
-.PHONY: install api worker pipeline run-sql nightly sql-silver sql-gold sql-all sanity trace-pipeline sql-contacts
+# Load .env if present, then export all keys from it
+ifneq (,$(wildcard .env))
+include .env
+# Export every KEY=... defined in .env to the recipe environment
+export $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env)
+endif
+
+.PHONY: install api worker pipeline run-sql nightly sql-silver sql-gold sql-all sanity trace-pipeline sql-contacts which-db
 
 install:
 	pip install -r requirements.txt
@@ -43,14 +50,29 @@ GOLD_SQL = \
 PIPELINE_SQL = $(PRELUDE_SQL) $(SILVER_SQL) $(GOLD_SQL)
 
 # ---------------------------
+# Helpers
+# ---------------------------
+
+# Hard fail if DATABASE_URL missing
+define _require_db
+	@if [ -z "$(DATABASE_URL)" ]; then echo "ERROR: DATABASE_URL not set"; exit 1; fi
+endef
+
+which-db:
+	$(_require_db)
+	@echo "Using DATABASE_URL from .env"; \
+	psql "$(DATABASE_URL)" -Atc \
+	"select 'db='||current_database()||' user='||current_user||' host='||coalesce(inet_server_addr()::text,'local')||' port='||coalesce(inet_server_port()::text,'local');"
+
+# ---------------------------
 # Top-level pipeline targets
 # ---------------------------
 
 pipeline:
-	@if [ -z "$(DATABASE_URL)" ]; then echo "DATABASE_URL not set"; exit 1; fi
+	$(_require_db)
 	@for f in $(PIPELINE_SQL); do \
 	    echo ">> $$f"; \
-	    psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f $$f || exit 1; \
+	    psql "$(DATABASE_URL)" -v ON_ERROR_STOP=1 -f $$f || exit 1; \
 	done
 
 run-sql: pipeline
@@ -63,17 +85,18 @@ nightly:
 # ---------------------------
 
 sql-silver:
-	@if [ -z "$(DATABASE_URL)" ]; then echo "DATABASE_URL not set"; exit 1; fi
+	$(_require_db)
+	@$(MAKE) which-db
 	@for f in $(PRELUDE_SQL) $(SILVER_SQL); do \
 	    echo ">> $$f"; \
-	    psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f $$f || exit 1; \
+	    psql "$(DATABASE_URL)" -v ON_ERROR_STOP=1 -f $$f || exit 1; \
 	done
 
 sql-gold: sql-silver
-	@if [ -z "$(DATABASE_URL)" ]; then echo "DATABASE_URL not set"; exit 1; fi
+	$(_require_db)
 	@for f in $(GOLD_SQL); do \
 	    echo ">> $$f"; \
-	    psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f $$f || exit 1; \
+	    psql "$(DATABASE_URL)" -v ON_ERROR_STOP=1 -f $$f || exit 1; \
 	done
 
 # Convenience alias (previous name)
@@ -87,7 +110,8 @@ sql-all: sql-silver sql-gold
 # ---------------------------
 
 sanity:
-	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
+	$(_require_db)
+	psql "$(DATABASE_URL)" -v ON_ERROR_STOP=1 -f scripts/sanity.sql
 
 trace-pipeline:
 	python scripts/trace_pipeline.py SOURCE=$(SOURCE) OFFSET=$(OFFSET)
