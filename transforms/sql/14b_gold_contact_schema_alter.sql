@@ -36,19 +36,10 @@ BEGIN
 END$$;
 
 --------------------------------------------------------------------------------
--- Ensure lookup index for generic_email_lower
+-- Ensure lookup index for generic_email_lower (simple, idempotent)
 --------------------------------------------------------------------------------
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname='gold' AND c.relkind = ''i'' AND c.relname='ix_contact_generic_email_lower'
-  ) THEN
-    EXECUTE 'CREATE INDEX ix_contact_generic_email_lower ON gold.contact (generic_email_lower)';
-  END IF;
-END$$;
+CREATE INDEX IF NOT EXISTS ix_contact_generic_email_lower
+ON gold.contact (generic_email_lower);
 
 --------------------------------------------------------------------------------
 -- NAME_NORM: keep it in sync via trigger (do NOT drop; views may depend on it)
