@@ -41,11 +41,11 @@ WITH src AS (
     NULLIF(js."location", '')         AS location_raw,
 
     -- Dates
-    js.date_posted                    AS date_posted,   -- keep as DATE
+    js.date_posted                    AS date_posted,   -- DATE
     js."time_stamp"                   AS scraped_at,    -- timestamptz
 
     -- Flags
-    js.is_remote                      AS is_remote_raw, -- already boolean
+    js.is_remote                      AS is_remote_raw, -- boolean
 
     -- Compensation
     js.min_amount                     AS salary_min_raw,
@@ -59,7 +59,6 @@ norm AS (
     'jobspy'::text                                 AS source,
     s.source_site,
     s.source_id,
-    -- canonical pointer back to the source listing (prefer the listing URL)
     util.url_canonical(COALESCE(s.job_url_raw, s.apply_url_raw)) AS source_row_url,
     s.scraped_at,
     s.date_posted,
