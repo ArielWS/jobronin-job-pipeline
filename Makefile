@@ -21,9 +21,8 @@ PRELUDE_SQL = \
   transforms/sql/04_util_functions.sql \
   transforms/sql/04b_util_person_functions.sql
 
-# Silver-only (builds the normalized source layer)
+# Silver-only (read-only from public.* sources)
 SILVER_SQL = \
-  transforms/sql/00_jobspy_raw.sql \
   transforms/sql/01_silver_jobspy.sql \
   transforms/sql/02_silver_profesia_sk.sql \
   transforms/sql/02_silver_stepstone.sql \
@@ -63,7 +62,6 @@ nightly:
 # Layered targets
 # ---------------------------
 
-# Build Silver layer only (plus prerequisites)
 sql-silver:
 	@if [ -z "$(DATABASE_URL)" ]; then echo "DATABASE_URL not set"; exit 1; fi
 	@for f in $(PRELUDE_SQL) $(SILVER_SQL); do \
@@ -71,7 +69,6 @@ sql-silver:
 	    psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f $$f || exit 1; \
 	done
 
-# Build Gold layer (depends on Silver). Keeps order: company → contacts.
 sql-gold: sql-silver
 	@if [ -z "$(DATABASE_URL)" ]; then echo "DATABASE_URL not set"; exit 1; fi
 	@for f in $(GOLD_SQL); do \
