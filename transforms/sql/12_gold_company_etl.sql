@@ -640,3 +640,37 @@ USING victims v
 WHERE c.company_id = v.victim_id;
 
 COMMIT;
+
+DO $$
+BEGIN
+  -- Validate FK on gold.contact → gold.company if present and not yet validated
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = rel.relnamespace
+    WHERE n.nspname='gold'
+      AND rel.relname='contact'
+      AND con.conname='fk_contact_company'
+      AND con.contype='f'
+      AND NOT con.convalidated
+  ) THEN
+    ALTER TABLE gold.contact VALIDATE CONSTRAINT fk_contact_company;
+  END IF;
+
+  -- Validate FK on gold.contact_affiliation → gold.company if present and not yet validated
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = rel.relnamespace
+    WHERE n.nspname='gold'
+      AND rel.relname='contact_affiliation'
+      AND con.conname='fk_contact_affil_company'
+      AND con.contype='f'
+      AND NOT con.convalidated
+  ) THEN
+    ALTER TABLE gold.contact_affiliation VALIDATE CONSTRAINT fk_contact_affil_company;
+  END IF;
+END
+$$;
