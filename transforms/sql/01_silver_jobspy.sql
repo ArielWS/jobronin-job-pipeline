@@ -38,7 +38,7 @@ WITH src AS (
     NULLIF(js.emails, '')             AS emails_raw,
 
     -- Location
-    NULLIF(js.location, '')           AS location_raw,
+    NULLIF(js."location", '')         AS location_raw,
 
     -- Dates
     js.date_posted                    AS date_posted,   -- keep as DATE
